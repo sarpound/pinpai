@@ -12,7 +12,7 @@ import { stayForDay } from "@/lib/client/stays";
 import { avatarDataUrl } from "@/lib/client/avatar";
 import { SuggestSlot, toMin, toHHMM, type PickFn, type SuggestKind } from "./Suggest";
 import { TravelLines, transferMin } from "./TravelPanel";
-import { rideGuide } from "@/lib/transport";
+import { mapAppAt, rideGuide } from "@/lib/transport";
 
 /** "外滩 (The Bund)" → "The Bund"; "วัดพระสิงห์ (Wat Phra Singh)" → "วัดพระสิงห์" */
 export function shortName(name: string) {
@@ -112,7 +112,7 @@ function LegRow({ leg, color, from, to }: { leg: Leg | undefined; color: string;
           {g.driverText && (
             <div className="rounded-[12px] bg-surface p-2.5">
               <p className="text-[11px] text-muted">ยื่นให้คนขับดู</p>
-              <p className="text-[20px] font-semibold leading-7" lang="zh">{g.driverText}</p>
+              <p className="text-[20px] font-semibold leading-7" lang={/[\uac00-\ud7af]/.test(g.driverText) ? "ko" : /[\u3040-\u30ff]/.test(g.driverText) ? "ja" : "zh"}>{g.driverText}</p>
             </div>
           )}
           <p className="text-[11px] text-muted">เวลาและราคาเป็นค่าประมาณ สายรถและจุดเปลี่ยนสายดูใน {g.mapApp}</p>
@@ -285,7 +285,7 @@ export function DayView({ index, label, theme, color, places, me, route, hotel, 
             )}
           </div>
           {confirmDay && <p className="mt-2 text-[12px] text-muted" role="status">ระบบจะจัดเฉพาะวันที่ {index + 1} ใหม่ ที่ที่เพื่อนเพิ่มเอง กดหัวใจ หรือไปแล้ว จะไม่หาย วันอื่นไม่เปลี่ยน</p>}
-          <p className="mt-3 text-[12px] text-muted">{routeOk && route!.exact ? "เวลาเดินทางคำนวณจากถนนจริง (ไม่รวมรถติด)" : "เวลาเดินทางเป็นค่าประมาณ"} · กด “นำทาง” เพื่อเปิด Google Maps</p>
+          <p className="mt-3 text-[12px] text-muted">{routeOk && route!.exact ? "เวลาเดินทางคำนวณจากถนนจริง (ไม่รวมรถติด)" : "เวลาเดินทางเป็นค่าประมาณ"} · กด “นำทาง” เพื่อเปิด {(() => { const p0 = places.find((p) => p.lat != null); return p0 ? mapAppAt({ lat: p0.lat!, lng: p0.lng! }) : "Google Maps"; })()}</p>
         </div>
       )}
     </div>

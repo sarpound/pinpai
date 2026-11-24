@@ -5,6 +5,7 @@ import { sql } from "./db";
 import { distKm } from "./geo";
 import { legMinutes, type Calib } from "./retime";
 import { routeUrl } from "./maplinks";
+import { carLabel } from "./transport";
 
 export type Mode = "transit" | "taxi" | "drive" | "walk";
 export type LL = { lat: number; lng: number };
@@ -21,7 +22,7 @@ function legFor(a: LL, b: LL, roadKm: number, carMin: number | null, mode: Mode,
   const { min, kind } = legMinutes(roadKm, carMin, mode, calib);
   if (kind === "walk") return { km: roadKm, min, mode: "walk", label: `เดิน ${min} นาที`, url: gmapsLeg(a, b, "walk") };
   if (kind === "transit") return { km: roadKm, min, mode: "transit", label: `รถไฟฟ้า/รถเมล์ ~${min} นาที`, url: gmapsLeg(a, b, "transit") };
-  return { km: roadKm, min, mode: "car", label: `${mode === "taxi" ? "แท็กซี่/Grab" : "ขับรถ"} ~${min} นาที`, url: gmapsLeg(a, b, "car") };
+  return { km: roadKm, min, mode: "car", label: `${mode === "taxi" ? carLabel(b) : "ขับรถ"} ~${min} นาที`, url: gmapsLeg(a, b, "car") };
 }
 
 async function osrm(points: LL[]): Promise<{ legs: { distance: number; duration: number }[]; geometry: [number, number][] } | null> {

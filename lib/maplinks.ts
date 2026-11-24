@@ -48,8 +48,16 @@ export function gmapsRoute(a: LL, b: LL, mode: "walk" | "transit" | "car") {
   return u.toString();
 }
 
+// South Korea: Google Maps has no walking/driving directions there → KakaoMap
+export const inSouthKorea = (lat: number, lng: number) => lat > 33 && lat < 38.7 && lng > 124.5 && lng < 130 && !(lng > 129.1 && lat < 34.8);
+// documented KakaoMap link: route to B from where the phone is (the web link can't take a start point reliably)
+export function kakaoRoute(_a: LL & { name?: string }, b: LL & { name?: string }, _mode?: "walk" | "transit" | "car") {
+  return `https://map.kakao.com/link/to/${encodeURIComponent(localName(b.name ?? "도착").replace(/,/g, " ") || "도착")},${b.lat},${b.lng}`;
+}
+
 /** A→B in the right app for the country */
 export function routeUrl(a: LL & { name?: string }, b: LL & { name?: string }, mode: "walk" | "transit" | "car") {
   if (inMainlandChina(a.lat, a.lng) || inMainlandChina(b.lat, b.lng)) return amapRoute(b, mode === "walk" ? "walk" : mode === "transit" ? "bus" : "car", a);
+  if (inSouthKorea(a.lat, a.lng) && inSouthKorea(b.lat, b.lng)) return kakaoRoute(a, b, mode);
   return gmapsRoute(a, b, mode);
 }

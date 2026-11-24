@@ -93,11 +93,12 @@ export function gmapsDirections(stops: { lat: number | null; lng: number | null 
 }
 
 export { inMainlandChina, amapPlace, amapRoute } from "@/lib/maplinks";
-import { inMainlandChina, amapRoute, amapPlace } from "@/lib/maplinks";
+import { inMainlandChina, inSouthKorea, kakaoRoute, amapRoute, amapPlace } from "@/lib/maplinks";
 
 /** Turn-by-turn link to one place from where the phone is: Amap inside mainland China, Google Maps elsewhere. */
 export function navUrl(p: { lat: number | null; lng: number | null; name: string }) {
   if (p.lat == null || p.lng == null) return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(p.name)}`;
   if (inMainlandChina(p.lat, p.lng)) return amapRoute({ lat: p.lat, lng: p.lng, name: p.name }, "bus");
+  if (inSouthKorea(p.lat, p.lng)) return kakaoRoute(p as never, { lat: p.lat, lng: p.lng, name: p.name });
   return `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}`;
 }

@@ -43,8 +43,8 @@ const LOCAL: (Local & { box: (lat: number, lng: number) => boolean })[] = [
     bus: "รถเมล์ · ขึ้นประตูกลาง แตะบัตร IC ตอนขึ้นและตอนลง (เกียวโตส่วนใหญ่ขึ้นหลังจ่ายหน้า)",
     taxi: "แอป GO หรือ Uber · โบกได้ ประตูหลังเปิด-ปิดเอง ไม่ต้องให้ทิป",
     fare: { cur: "¥", base: 500, perKm: 400, baseKm: 1.1 }, transitFare: "¥180–400" },
-  { key: "kr", box: (a, o) => a > 33 && a < 39 && o > 124.5 && o < 130, mapApp: "Naver Map / KakaoMap", showDriver: true,
-    metro: "รถไฟใต้ดิน · แตะ T-money/WOWPASS ที่ประตู (Google Maps นำทางในเกาหลีไม่ครบ ใช้ Naver Map/KakaoMap)",
+  { key: "kr", box: (a, o) => a > 33 && a < 39 && o > 124.5 && o < 130, mapApp: "KakaoMap", showDriver: true,
+    metro: "รถไฟใต้ดิน · แตะ T-money/WOWPASS ที่ประตู (Google Maps นำทางในเกาหลีไม่ครบ ปุ่มนำทางจะเปิด KakaoMap)",
     bus: "รถเมล์ · แตะ T-money ตอนขึ้นและตอนลง (เปลี่ยนสายฟรีใน 30 นาที)",
     taxi: "แอป Kakao T (ผูกบัตรต่างชาติได้) หรือ Uber · ยื่นชื่อเกาหลีด้านล่างให้คนขับดู",
     fare: { cur: "₩", base: 4800, perKm: 1100, baseKm: 1.6 }, transitFare: "₩1,500–2,000" },
@@ -101,6 +101,11 @@ const LOCAL: (Local & { box: (lat: number, lng: number) => boolean })[] = [
 ];
 
 const localOf = (p: LL) => LOCAL.find((l) => l.box(p.lat, p.lng))!;
+
+// the ride-hail app people actually use there, for short leg labels ("แท็กซี่/DiDi ~12 นาที")
+const RIDE: Record<string, string> = { cn: "DiDi", hk: "Uber", mo: "แท็กซี่", tw: "Uber", jp: "GO", kr: "Kakao T", in: "Uber", ae: "Careem", tr: "BiTaksi", gb: "Uber", fr: "Uber", eu: "Uber/Bolt", au: "Uber", us: "Uber" };
+export const carLabel = (p: LL) => { const r = RIDE[localOf(p).key] ?? "Grab"; return r === "แท็กซี่" ? "แท็กซี่" : `แท็กซี่/${r}`; };
+export const mapAppAt = (p: LL) => localOf(p).mapApp;
 
 export type RideOption = { kind: "walk" | "transit" | "car"; min: number; title: string; how: string; cost: string | null; url: string };
 export type RideGuide = { options: RideOption[]; driverText: string | null; mapApp: string };
