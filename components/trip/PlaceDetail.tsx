@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/client/api";
-import { CATEGORY, fmtDur, gmapsPlace, inMainlandChina } from "@/lib/client/util";
+import { CATEGORY, fmtDur, gmapsPlace, inMainlandChina, amapPlace, amapRoute } from "@/lib/client/util";
 import { Button, inputCls } from "@/components/ui/Field";
 import { IconArrowDown, IconArrowUp, IconChevronLeft, IconChevronRight, IconExternal, IconHeart, IconTrash, IconRoute } from "@/components/icons";
 import { CatIcon } from "./shared";
@@ -106,7 +106,7 @@ export default function PlaceDetail({ place, tripId, token, me, members, dayOpti
           <IconHeart size={17} filled={voted} />{place.votes.length ? `${place.votes.length} คนอยากไป` : "อยากไป"}
         </Button>
         <a href={gmapsPlace(place, cityHint)} target="_blank" rel="noreferrer" className="inline-flex h-10 items-center justify-center gap-2 whitespace-nowrap rounded-full border border-line bg-surface px-3 text-[14px] font-medium hover:bg-sunken">
-          <IconExternal size={16} />เปิด Google Maps
+          <IconExternal size={16} />{cn ? "เปิดใน Amap" : "เปิด Google Maps"}
         </a>
       </div>
       {onShare && <button onClick={onShare} className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-full border border-line bg-surface text-[14px] font-medium hover:bg-sunken">💬 ส่งที่นี่เข้าแชททริป</button>}
@@ -124,8 +124,12 @@ export default function PlaceDetail({ place, tripId, token, me, members, dayOpti
         <div className="rounded-[16px] bg-sunken p-3">
           <p className="text-[12px] text-muted">ที่จีนใช้ Google Maps ไม่ได้ · ยื่นชื่อนี้ให้คนขับดู หรือเปิดใน Amap (高德)</p>
           <p className="mt-1 text-[22px] font-semibold leading-8" lang="zh">{localName}</p>
-          <a href={`https://uri.amap.com/marker?position=${place.lng},${place.lat}&name=${encodeURIComponent(localName)}&coordinate=wgs84&callnative=1`} target="_blank" rel="noreferrer"
-            className="mt-2 inline-flex h-10 items-center gap-1.5 rounded-full bg-ink px-4 text-[14px] font-semibold text-white"><IconRoute size={16} />นำทางด้วย Amap</a>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <a href={amapRoute({ lat: place.lat!, lng: place.lng!, name: place.name }, "bus")} target="_blank" rel="noreferrer"
+              className="inline-flex h-10 items-center gap-1.5 rounded-full bg-ink px-4 text-[14px] font-semibold text-white"><IconRoute size={16} />นำทางด้วย Amap</a>
+            <a href={amapPlace(place)} target="_blank" rel="noreferrer"
+              className="inline-flex h-10 items-center gap-1.5 rounded-full border border-line bg-surface px-4 text-[14px] font-medium hover:bg-sunken"><IconExternal size={15} />ดูรีวิว/รูปใน Amap</a>
+          </div>
         </div>
       )}
       <div className="flex items-center gap-3">

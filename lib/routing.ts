@@ -4,6 +4,7 @@ import { createHash } from "crypto";
 import { sql } from "./db";
 import { distKm } from "./geo";
 import { legMinutes, type Calib } from "./retime";
+import { routeUrl } from "./maplinks";
 
 export type Mode = "transit" | "taxi" | "drive" | "walk";
 export type LL = { lat: number; lng: number };
@@ -12,14 +13,8 @@ export type DayRoute = { legs: Leg[]; geometry: [number, number][]; exact: boole
 
 const UA = "PinPai/0.2 (trip planner; https://pinpai-sarpounds-projects.vercel.app)";
 
-function gmapsLeg(a: LL, b: LL, mode: Leg["mode"]) {
-  const u = new URL("https://www.google.com/maps/dir/");
-  u.searchParams.set("api", "1");
-  u.searchParams.set("origin", `${a.lat},${a.lng}`);
-  u.searchParams.set("destination", `${b.lat},${b.lng}`);
-  u.searchParams.set("travelmode", mode === "walk" ? "walking" : mode === "transit" ? "transit" : "driving");
-  return u.toString();
-}
+// Amap inside mainland China (Google Maps does not work there), Google Maps elsewhere
+const gmapsLeg = (a: LL, b: LL, mode: Leg["mode"]) => routeUrl(a, b, mode);
 
 // same model as the timetable (lib/retime legMinutes), so leg times and planned times agree
 function legFor(a: LL, b: LL, roadKm: number, carMin: number | null, mode: Mode, calib?: Calib | null): Leg {

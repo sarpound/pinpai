@@ -411,6 +411,9 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
           // the pin is far from the AI's own spot AND far from the day → look again near the AI's spot, else drop
           const wrong = (offAi != null && offAi > 5 && fromDay > 6 && fromHotel > 6) || (offAi == null && fromDay > 20 && fromHotel > 20);
           if (!wrong) continue;
+          const eatHere = r.it.category === "food" || r.it.category === "cafe";
+          // a meal 45 km out while the rest of the day is in town is the wrong branch / the model's mistake, not a day trip
+          if (eatHere && fromDay > 8 && fromHotel > 8) { dropped.add(r); continue; }
           if (g && distKm(g, mid) > 20) continue; // the AI planned a real day trip there
           const again = g && Date.now() - t0 < 230_000
             ? await resolvePlace(r.it.name_local ?? r.it.name, null, g, 3, { alt: r.it.name_local ? r.it.name : null, category: r.it.category, strict: true, nearest: true }).catch(() => null) : null;
@@ -435,6 +438,9 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
       // the same venue twice (a rooftop bar and then "dinner" at the same bar, or one restaurant for two meals): keep the first
       const seenVenue: { r: Res; key: string }[] = [];
       const otherKeys = new Set(others.map(norm).filter((k) => k.length >= 4));
+      // the same restaurant chain twice in a trip (外婆家 three dinners in a week): keep the first, the meal check refills the rest
+      const brandOf = (s: string) => norm(s.split(/[(（]/)[0]);
+      const brands = new Set(others.map(brandOf).filter((k) => k.length >= 2));
       for (const r of resolved.filter((x) => x.it.category !== "stay" && x.it.category !== "transport" && !dropped.has(x)).sort((x, y) => x.it.day - y.it.day || x.it.order - y.it.order)) {
         const keys = [norm(r.label), norm(r.it.name), r.it.name_local ? norm(r.it.name_local) : ""].filter((k) => k.length >= 4);
         const same = (v: { r: Res }) => v.r.it.day === r.it.day;
@@ -444,7 +450,9 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
           (same(v) && keys.some((k) => Math.min(k.length, v.key.length) >= 5 && (v.key.includes(k) || k.includes(v.key)))) ||
           (same(v) && v.r.pt && r.pt && distKm(v.r.pt, r.pt) < 0.05));
         // …or a venue another day of the trip already has (long trips are planned in blocks)
-        if (!r.existingId && (dup || keys.some((k) => otherKeys.has(k)))) { dropped.add(r); continue; }
+        const brand = eatsHere ? brandOf(r.label) : "";
+        if (!r.existingId && (dup || keys.some((k) => otherKeys.has(k)) || (brand.length >= 2 && brands.has(brand)))) { dropped.add(r); continue; }
+        if (brand.length >= 2) brands.add(brand);
         for (const k of keys) seenVenue.push({ r, key: k });
       }
       // tasting menus / fine dining take ~3 hours and need a booking
@@ -518,14 +526,14 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
           await retimeStored(tx, id, d, { keepGaps: true });
         }).catch((e) => console.error("retime after plan", d, e));
       }
+      // running first: real scenic routes near the hotel instead of the AI's guessed "running spot" (tidy then knows where mornings start)
+      await addRunRoutes(id, days, sc).catch((e) => console.error("run routes", e));
       // nothing before landing / after take-off, closed-for-good places, double dinners, diet clashes
       await tidyDays(id, days, sc, t0 + 240_000).then((n) => n.length && console.log("tidy", n.join(" | "))).catch((e) => console.error("tidy", e));
       // real, known, still open? (Wikipedia / Wikidata) — closed-for-good sights leave the plan
       await verifyTripPlaces(id, Math.min(t0 + 225_000, Date.now() + 45_000)).then((v) => v.closed.length && console.log("closed", v.closed.join(" | "))).catch((e) => console.error("verify", e));
       // bags: drop at the hotel after landing, check-out + pick-up on the last day, moving between hotels
       await addHotelTasks(id, days, sc).catch((e) => console.error("hotel tasks", e));
-      // running: real scenic routes near the hotel instead of the AI's guessed "running spot"
-      await addRunRoutes(id, days, sc).catch((e) => console.error("run routes", e));
       // activities the group asked for that are still missing → a real venue from the map
       await ensureWants(id, days, sc, t0 + 255_000).then((n) => n.length && console.log("wants", n.join(" | "))).catch((e) => console.error("wants", e));
       // meals the AI left empty → a real restaurant next to the stop before (OpenStreetMap), within the time budget

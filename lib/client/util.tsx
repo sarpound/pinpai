@@ -71,12 +71,16 @@ export const CATEGORY: Record<string, { label: string; Icon: (p: { size?: number
   other: { label: "อื่นๆ", Icon: IconDot },
 };
 export function gmapsPlace(p: { name: string; lat: number | null; lng: number | null }, hint?: string | null) {
+  // in mainland China the place page opens in Amap (Google Maps does not work there)
+  if (p.lat != null && p.lng != null && inMainlandChina(p.lat, p.lng)) return amapPlace(p);
   const q = [p.name.replace(/\s*\(.*\)$/, ""), hint].filter(Boolean).join(" ");
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q || `${p.lat},${p.lng}`)}`;
 }
 export function gmapsDirections(stops: { lat: number | null; lng: number | null }[], mode?: string) {
   const s = stops.filter((p) => p.lat != null).slice(0, 10);
   if (s.length < 2) return null;
+  // Google Maps does not work in mainland China and Amap has no multi-stop link: each leg there has its own Amap button
+  if (inMainlandChina(s[0].lat!, s[0].lng!)) return null;
   const pt = (p: { lat: number | null; lng: number | null }) => `${p.lat},${p.lng}`;
   const u = new URL("https://www.google.com/maps/dir/");
   u.searchParams.set("api", "1");
@@ -88,24 +92,12 @@ export function gmapsDirections(stops: { lat: number | null; lng: number | null 
   return u.toString();
 }
 
-/** Rough test for mainland China (Google Maps is unavailable there). Excludes Taiwan, Hong Kong/Macau, Korea, Japan, SE Asia. */
-export function inMainlandChina(lat: number, lng: number) {
-  if (lat < 18 || lat > 53.6 || lng < 73.5 || lng > 135) return false;
-  if (lng > 119.3 && lng < 122.2 && lat > 21.7 && lat < 25.4) return false; // Taiwan
-  if (lng > 113.5 && lng < 114.5 && lat > 22.1 && lat < 22.6) return false; // Hong Kong / Macau
-  if (lng > 124 && lat < 42.5) return false; // Korea / Japan
-  if (lat < 21.5 && lng < 108) return false; // Vietnam / Laos / Myanmar / Thailand
-  if (lat < 28 && lng < 97.5) return false; // India / Myanmar
-  if (lat > 42 && lng > 96 && lng < 119 && lat > 41.6 + (lng - 96) * 0.25) return false; // Mongolia (rough)
-  return true;
-}
+export { inMainlandChina, amapPlace, amapRoute } from "@/lib/maplinks";
+import { inMainlandChina, amapRoute, amapPlace } from "@/lib/maplinks";
 
 /** Turn-by-turn link to one place from where the phone is: Amap inside mainland China, Google Maps elsewhere. */
 export function navUrl(p: { lat: number | null; lng: number | null; name: string }) {
   if (p.lat == null || p.lng == null) return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(p.name)}`;
-  if (inMainlandChina(p.lat, p.lng)) {
-    const local = p.name.match(/^(.*?)\s*\((.*)\)\s*$/)?.[1] ?? p.name;
-    return `https://uri.amap.com/navigation?to=${p.lng},${p.lat},${encodeURIComponent(local)}&coordinate=wgs84&callnative=1`;
-  }
+  if (inMainlandChina(p.lat, p.lng)) return amapRoute({ lat: p.lat, lng: p.lng, name: p.name }, "bus");
   return `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}`;
 }

@@ -96,7 +96,8 @@ const renumber = (tripId: string, d: number) => sql`update pinpai.places p set s
  * - vegetarian / halal groups: an obviously meat / pork / bar place is swapped for a mapped veg / halal one nearby
  */
 export async function tidyDays(tripId: string, nDays: number, onlyDay: Scope, deadline: number) {
-  const [t] = await sql`select prefs from pinpai.trips where id = ${tripId}`;
+  const [t] = await sql`select prefs, start_date::text from pinpai.trips where id = ${tripId}`;
+  const startDate: string | null = t?.start_date ?? null;
   const food: string[] = t?.prefs?.food ?? [];
   const arrive: string | null = typeof t?.prefs?.arrive_time === "string" && HHMM.test(t.prefs.arrive_time) ? t.prefs.arrive_time : null;
   const diet = food.includes("halal") ? "halal" : food.includes("veg") ? "veg" : null;
@@ -125,6 +126,8 @@ export async function tidyDays(tripId: string, nDays: number, onlyDay: Scope, de
       if (other && isAi(r) && rows.indexOf(other) < rows.indexOf(r)) { await drop(r, true); notes.push(`มื้อซ้ำ: ${r.name}`); changed = true; continue; }
       if (clean.length >= 2) { await sql`update pinpai.places set name = ${clean.slice(0, 160)} where id = ${r.id} and trip_id = ${tripId}`; r.name = clean; }
     }
+    // a road is not a café ("湖滨路 (Hubin Road)" as afternoon coffee)
+    for (const r of [...rows]) if ((r.category === "food" || r.category === "cafe") && isAi(r) && /^[^()（]*?(路|大道|大街)\s*(\(|$)|^[^()]*\b(Road|Street|Avenue)\)?\s*$/i.test(r.name.trim()) && !/餐|饭|馆|店|楼|坊|cafe|coffee|restaurant|kitchen/i.test(r.name)) { await drop(r, false); changed = true; }
     // "hotel" / "breakfast" as a restaurant name is a placeholder, not a place
     for (const r of [...rows]) if ((r.category === "food" || r.category === "cafe") && isAi(r) && (/^(the )?(hotel|hotel breakfast|breakfast|อาหารเช้า(ที่)?โรงแรม|โรงแรม|ที่พัก)$/i.test(r.name.trim()) || /^(familymart|family mart|7-eleven|seven-eleven|lawson|ministop|gs25|cu)\b|ファミリーマート|セブン-?イレブン|ローソン/i.test(r.name.trim()))) { await drop(r, false); changed = true; }
     // arrival
@@ -166,7 +169,8 @@ export async function tidyDays(tripId: string, nDays: number, onlyDay: Scope, de
       const h = hr ? { lat: Number(hr.lat), lng: Number(hr.lng) } : null;
       const bf = rows.find((r) => (r.category === "cafe" || r.category === "food") && (hm2(r.start_time) ?? 999) < 9 * 60 + 30);
       const firstSight = rows.find((r) => r.details?.kind !== HOTEL_TASK && r.details?.kind !== "run" && r !== bf);
-      if (h && bf && isAi(bf) && kmBetween(bf, h) > 8 && !(firstSight && kmBetween(bf, firstSight) < 3)) {
+      const run = rows.find((r) => r.details?.kind === "run");
+      if (h && bf && isAi(bf) && kmBetween(bf, h) > 8 && !(firstSight && kmBetween(bf, firstSight) < 3) && !(run && kmBetween(bf, run) < 3)) {
         const { eateriesNear, pickEatery } = await import("./eats");
         const near = { lat: Number(h.lat), lng: Number(h.lng) };
         const e = pickEatery(await eateriesNear(near, "cafe", diet).catch(() => []), { near, at: hm2(bf.start_time) ?? 480, meal: "breakfast", food, used: new Set(), spicyOk: true });
@@ -176,6 +180,25 @@ export async function tidyDays(tripId: string, nDays: number, onlyDay: Scope, de
             where id = ${bf.id} and trip_id = ${tripId}`;
           notes.push(`มื้อเช้าไกล: ${bf.name} → ${e.name}`); changed = true;
         }
+      }
+    }
+    // a sunset stop happens at sunset (December in Hangzhou: ~17:00, not 18:30)
+    if (startDate) {
+      const { sunTimes, tzOffsetMin } = await import("./geo");
+      for (const r of rows) {
+        if (!isAi(r) || r.lat == null || r.category === "food" || r.details?.kind) continue;
+        if (!/พระอาทิตย์ตก|sunset|夕阳|日落|夕日/i.test(`${r.name} ${String(r.details?.why ?? "")}`)) continue;
+        const date = new Date(Date.parse(startDate) + d * 864e5).toISOString().slice(0, 10);
+        const sun = sunTimes(r.lat, r.lng!, date, tzOffsetMin(r.lat, r.lng!, date));
+        const set = sun ? hm2(sun.set) : null, st = hm2(r.start_time);
+        if (set == null || st == null || (st >= set - 75 && st <= set)) continue;
+        const at = set - 40;
+        await sql`update pinpai.places set start_time = ${`${String(Math.floor(at / 60)).padStart(2, "0")}:${String(at % 60).padStart(2, "0")}`},
+          details = details || ${sql.json({ why: `${String(r.details?.why ?? "").replace(/\s*· พระอาทิตย์ตก.*$/, "").slice(0, 220)} · พระอาทิตย์ตก ~${sun!.set}` } as never)} where id = ${r.id} and trip_id = ${tripId}`;
+        // slot it by its new time
+        await sql`update pinpai.places p set sort_order = q.n * 10 from (select id, row_number() over (order by (start_time is null), start_time, sort_order) as n
+          from pinpai.places where trip_id = ${tripId} and day_index = ${d} and category <> 'stay') q where p.id = q.id`;
+        notes.push(`ย้ายชมพระอาทิตย์ตกเป็น ${sun!.set}: ${r.name}`); changed = true;
       }
     }
     for (const r of [...rows]) if (isAi(r) && CLOSED.test(r.name)) { await drop(r, false); notes.push(`ปิดถาวร: ${r.name}`); changed = true; }
@@ -341,7 +364,7 @@ export async function addHotelTasks(tripId: string, nDays: number, onlyDay: Scop
  * close to the hotel.
  */
 export async function addRunRoutes(tripId: string, nDays: number, onlyDay: Scope) {
-  const [t] = await sql`select prefs, dest_lat::float8 as lat, dest_lng::float8 as lng from pinpai.trips where id = ${tripId}`;
+  const [t] = await sql`select prefs, start_date::text, dest_lat::float8 as lat, dest_lng::float8 as lng from pinpai.trips where id = ${tripId}`;
   if (!t || !(t.prefs?.wants ?? []).includes("run") || nDays < 3) return [] as number[];
   const hotelOn = await hotels(tripId);
   const dest = t.lat != null ? { lat: Number(t.lat), lng: Number(t.lng) } : null;
@@ -376,13 +399,28 @@ export async function addRunRoutes(tripId: string, nDays: number, onlyDay: Scope
       continue;
     }
     for (const r of aiRuns) await sql`delete from pinpai.places where id = ${r.id} and trip_id = ${tripId}`;
-    const route = routes[k++ % routes.length];
+    // a different route each morning; a route that needs a taxi ride (> 4 km) only every other morning
+    const near = routes.filter((r) => r.fromHotelKm <= 4);
+    const pool = near.length ? near : routes;
+    if (!near.length && (d % 2 === 0)) { k++; continue; }
+    const route = pool[k++ % pool.length];
     const first = stops.find((r) => !aiRuns.includes(r));
     const fromHotel = route.fromHotelKm;
-    const why = `${route.why} · จุดเริ่ม: ${route.start}${fromHotel <= 1.5 ? " (วิ่งจากที่พักไปได้เลย)" : ` (ห่างที่พัก ~${fromHotel} กม.)`}`;
+    // asked for sunrise too: run at first light (the run then counts as the sunrise)
+    let at = 6 * 60 + 15, sunNote = "";
+    if (t.start_date) {
+      const { sunTimes, tzOffsetMin } = await import("./geo");
+      const date = new Date(Date.parse(t.start_date) + d * 864e5).toISOString().slice(0, 10);
+      const sun = sunTimes(route.lat, route.lng, date, tzOffsetMin(route.lat, route.lng, date));
+      const rise = sun ? hm(sun.rise) : null;
+      if (rise != null && (t.prefs?.wants ?? []).includes("sunrise")) at = Math.max(5 * 60 + 30, rise - 20);
+      if (rise != null && rise >= at - 10 && rise <= at + runMinutes(route.km)) sunNote = ` · ทันพระอาทิตย์ขึ้น ~${sun!.rise}`;
+    }
+    const why = `${route.why} · จุดเริ่ม: ${route.start}${fromHotel <= 1.5 ? " (วิ่งจากที่พักไปได้เลย)" : ` (ห่างที่พัก ~${fromHotel} กม. นั่งแท็กซี่ ~${Math.round(8 + fromHotel * 2.2)} นาที)`}${sunNote}`;
+    const hh = `${String(Math.floor(at / 60)).padStart(2, "0")}:${String(at % 60).padStart(2, "0")}`;
     await sql`insert into pinpai.places (trip_id, name, category, lat, lng, day_index, sort_order, start_time, duration_min, details, source)
       values (${tripId}, ${`🏃 วิ่ง ${route.km} กม. · ${route.name}`.slice(0, 160)}, 'nature', ${route.lat}, ${route.lng}, ${d},
-        ${first ? Number(first.sort_order) - 5 : 5}, '06:15', ${runMinutes(route.km)},
+        ${first ? Number(first.sort_order) - 5 : 5}, ${hh}, ${runMinutes(route.km)},
         ${sql.json({ kind: "run", planned: true, why: why.slice(0, 300), route: { km: route.km, start: route.start } } as never)}, 'ai')`;
     await sql`update pinpai.places p set sort_order = r.n * 10 from (
         select id, row_number() over (order by sort_order, created_at) as n from pinpai.places where trip_id = ${tripId} and day_index = ${d}) r
@@ -435,7 +473,8 @@ export async function fillMissingMeals(tripId: string, nDays: number, onlyDay: S
       const before = timed.filter((x) => x.t <= at && x.r.lat != null).pop() ?? timed.find((x) => x.r.lat != null);
       // breakfast near where people slept; an early-ending day's dinner near where they sleep tonight —
       // unless that hotel is in another town than the day (a transfer day, a wrong hotel pin): then next to the day itself
-      const h0 = meal === "breakfast" ? hotelOn(d - 1) : hotelOn(d);
+      const runAt = meal === "breakfast" ? rows.find((r) => r.details?.kind === "run" && r.lat != null) : undefined;
+      const h0 = runAt ? { lat: runAt.lat!, lng: runAt.lng! } : meal === "breakfast" ? hotelOn(d - 1) : hotelOn(d);
       const pts = timed.filter((x) => x.r.lat != null && x.r.category !== "transport");
       const mid = pts.length ? { lat: [...pts].sort((p, q) => p.r.lat! - q.r.lat!)[Math.floor(pts.length / 2)].r.lat!, lng: [...pts].sort((p, q) => p.r.lng! - q.r.lng!)[Math.floor(pts.length / 2)].r.lng! } : null;
       const home = h0 && (!mid || kmBetween(h0, mid) <= 25) ? h0 : null;

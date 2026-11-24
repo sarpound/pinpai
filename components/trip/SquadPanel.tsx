@@ -1,7 +1,7 @@
 "use client";
 import { useMemo } from "react";
 import { avatarDataUrl } from "@/lib/client/avatar";
-import { ago, fmtKm } from "@/lib/client/util";
+import { ago, fmtKm, navUrl } from "@/lib/client/util";
 import { MODES, MANUAL_MODES, MOVING, km, isMode, type Mode } from "@/lib/presence";
 import { Button } from "@/components/ui/Field";
 import { IconFlag, IconLocate, IconRoute } from "@/components/icons";
@@ -122,7 +122,7 @@ export default function SquadPanel({ members, locations, me, rally, stays, shari
                     )}
                   </div>
                   {l && (
-                    <a href={`https://www.google.com/maps/dir/?api=1&destination=${l.lat},${l.lng}`} target="_blank" rel="noreferrer"
+                    <a href={navUrl({ lat: l.lat, lng: l.lng, name: m.name })} target="_blank" rel="noreferrer"
                       className="grid size-10 shrink-0 place-items-center rounded-full bg-sunken hover:bg-line/60" aria-label={`นำทางไปหา ${m.name}`}><IconRoute size={18} /></a>
                   )}
                 </div>

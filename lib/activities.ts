@@ -53,6 +53,10 @@ export const RUN_ROUTES: RunRoute[] = [
   { name: "Hudson River Greenway", start: "Pier 45 (West Village)", lat: 40.7330, lng: -74.0110, km: 5, why: "เลียบแม่น้ำฮัดสัน ทางเรียบยาว มองเห็นนิวเจอร์ซีย์" },
   // China (others) / Vietnam
   { name: "West Lake – Su Causeway", start: "Su Causeway (south end)", lat: 30.2470, lng: 120.1460, km: 5, why: "วิ่งบนคันทางกลางทะเลสาบซีหู เช้าตรู่หมอกบางๆ สวยมาก" },
+  { name: "West Lake – Bai Causeway & Beishan Road", start: "Broken Bridge (断桥)", lat: 30.2603, lng: 120.1530, km: 5, why: "สะพานขาด → ไป่ตี → เกาะกูซาน → ถนนเป่ยซาน ริมน้ำทั้งเส้น เห็นเจดีย์เป่าฉู" },
+  { name: "West Lake – Yanggong Causeway", start: "Yanggong Causeway (north end)", lat: 30.2468, lng: 120.1335, km: 6, why: "คันทางฝั่งตะวันตก คนน้อยกว่าซูตี้ ผ่านสวนและสะพานหิน ร่มรื่น" },
+  { name: "Hubin – Lakeside promenade", start: "Hubin Music Fountain (湖滨)", lat: 30.2571, lng: 120.1560, km: 4, why: "ทางเดินริมทะเลสาบฝั่งเมือง เรียบ ไฟสว่าง เหมาะวิ่งเช้ามืด" },
+  { name: "Qiantang River Greenway", start: "Six Harmonies Pagoda (六和塔)", lat: 30.1990, lng: 120.1310, km: 6, why: "ทางวิ่งริมแม่น้ำเฉียนถัง กว้าง ลมเย็น วิวเจดีย์หกประสาน" },
   { name: "Olympic Forest Park", start: "Olympic Forest Park (South Gate)", lat: 40.0167, lng: 116.3889, km: 5, why: "ทางวิ่งยางเฉพาะในสวนใหญ่ของปักกิ่ง" },
   { name: "My Khe Beach", start: "My Khe Beach", lat: 16.0610, lng: 108.2470, km: 5, why: "วิ่งเลียบหาดยาวของดานัง เช้าตรู่ลมเย็น" },
 ];

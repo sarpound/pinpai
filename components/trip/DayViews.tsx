@@ -12,6 +12,7 @@ import { stayForDay } from "@/lib/client/stays";
 import { avatarDataUrl } from "@/lib/client/avatar";
 import { SuggestSlot, toMin, toHHMM, type PickFn, type SuggestKind } from "./Suggest";
 import { TravelLines, transferMin } from "./TravelPanel";
+import { rideGuide } from "@/lib/transport";
 
 /** "外滩 (The Bund)" → "The Bund"; "วัดพระสิงห์ (Wat Phra Singh)" → "วัดพระสิงห์" */
 export function shortName(name: string) {
@@ -75,16 +76,47 @@ function Row({ p, me, onOpen, color, n }: { p: Place; me: string; onOpen: (id: s
   );
 }
 
-function LegRow({ leg, color }: { leg: Leg | undefined; color: string }) {
+type End = { lat: number | null; lng: number | null; name: string } | undefined;
+function LegRow({ leg, color, from, to }: { leg: Leg | undefined; color: string; from?: End; to?: End }) {
+  const [open, setOpen] = useState(false);
+  const g = open && leg && from?.lat != null && to?.lat != null
+    ? rideGuide({ lat: from.lat, lng: from.lng!, name: from.name }, { lat: to.lat, lng: to.lng!, name: to.name }, leg.km, null) : null;
   return (
-    <div className="flex min-h-9 items-center gap-3 pl-[29px]">
-      <span className="h-8 w-0 border-l-2 border-dotted" style={{ borderColor: color }} />
-      {leg && (
-        <span className="ml-[18px] flex min-w-0 flex-1 items-center gap-1.5 text-[12px] text-muted tnum">
-          {leg.mode === "walk" ? <IconWalk size={14} /> : leg.mode === "transit" ? <IconBus size={14} /> : <IconCar size={14} />}
-          <span className="truncate">{leg.label} · {fmtKm(leg.km)}</span>
-          <a href={leg.url} target="_blank" rel="noreferrer" className="-my-1.5 ml-auto inline-flex h-9 shrink-0 items-center rounded-full px-3 font-medium text-accent hover:bg-accent-tint">นำทาง</a>
-        </span>
+    <div className="pl-[29px]">
+      <div className="flex min-h-9 items-center gap-3">
+        <span className="h-8 w-0 border-l-2 border-dotted" style={{ borderColor: color }} />
+        {leg && (
+          <span className="ml-[18px] flex min-w-0 flex-1 items-center gap-1.5 text-[12px] text-muted tnum">
+            {/* tap the leg: every sensible way to get there, how to pay, what to show the driver */}
+            <button onClick={() => setOpen((v) => !v)} aria-expanded={open} className="-my-1.5 flex min-h-9 min-w-0 items-center gap-1.5 rounded-full pr-2 text-left hover:text-ink">
+              {leg.mode === "walk" ? <IconWalk size={14} /> : leg.mode === "transit" ? <IconBus size={14} /> : <IconCar size={14} />}
+              <span className="truncate">{leg.label} · {fmtKm(leg.km)}</span>
+              {from && to && <span className="shrink-0 text-accent">{open ? "ซ่อน" : "วิธีไป"}</span>}
+            </button>
+            <a href={leg.url} target="_blank" rel="noreferrer" className="-my-1.5 ml-auto inline-flex h-9 shrink-0 items-center rounded-full px-3 font-medium text-accent hover:bg-accent-tint">นำทาง</a>
+          </span>
+        )}
+      </div>
+      {g && (
+        <div className="mb-2 ml-[20px] mt-1 space-y-2 rounded-[14px] bg-sunken p-3 text-[13px]">
+          {g.options.map((o) => (
+            <div key={o.kind} className="flex items-start gap-2">
+              <span className="mt-0.5 shrink-0 text-muted">{o.kind === "walk" ? <IconWalk size={15} /> : o.kind === "transit" ? <IconBus size={15} /> : <IconCar size={15} />}</span>
+              <div className="min-w-0 flex-1">
+                <p className="font-semibold">{o.title} · ~{o.min} นาที{o.cost ? <span className="font-normal text-muted"> · {o.cost}</span> : null}</p>
+                <p className="whitespace-pre-line text-[12px] leading-5 text-muted">{o.how}</p>
+              </div>
+              <a href={o.url} target="_blank" rel="noreferrer" className="inline-flex h-8 shrink-0 items-center rounded-full border border-line bg-surface px-3 text-[12px] font-medium hover:bg-line/40">เปิดเส้นทาง</a>
+            </div>
+          ))}
+          {g.driverText && (
+            <div className="rounded-[12px] bg-surface p-2.5">
+              <p className="text-[11px] text-muted">ยื่นให้คนขับดู</p>
+              <p className="text-[20px] font-semibold leading-7" lang="zh">{g.driverText}</p>
+            </div>
+          )}
+          <p className="text-[11px] text-muted">เวลาและราคาเป็นค่าประมาณ สายรถและจุดเปลี่ยนสายดูใน {g.mapApp}</p>
+        </div>
       )}
     </div>
   );
@@ -121,6 +153,7 @@ export function DayView({ index, label, theme, color, places, me, route, hotel, 
   const off = hStart ? 1 : 0;
   const located = places.filter((p) => p.lat != null);
   const legAfter = (p: Place) => { const k = located.indexOf(p); return k >= 0 && k < located.length - 1 ? legs[k + off] : undefined; };
+  const nextOf = (p: Place) => { const k = located.indexOf(p); return k >= 0 ? located[k + 1] : undefined; };
   const total = legs.reduce((s, l) => s + l.min, 0);
 
   // smart fill: free time ≥ 2h between stops, and lunch/dinner the plan forgot → a slot with 3 nearby ideas
@@ -229,18 +262,18 @@ export function DayView({ index, label, theme, color, places, me, route, hotel, 
         </div>
       ) : (
         <div className="mt-3">
-          {hotel && hStart && <><HotelRow hotel={hotel} label={lastDay && !hEnd ? "เช็กเอาต์ ออกจากที่พัก" : "ออกจากที่พัก"} onOpen={onOpen} /><LegRow leg={legs[0]} color={color} /></>}
+          {hotel && hStart && <><HotelRow hotel={hotel} label={lastDay && !hEnd ? "เช็กเอาต์ ออกจากที่พัก" : "ออกจากที่พัก"} onOpen={onOpen} /><LegRow leg={legs[0]} color={color} from={hotel} to={located[0]} /></>}
           {slots.get(-1)}
           <ol>
             {places.map((p, i) => (
               <li key={p.id}>
                 <Row p={p} me={me} onOpen={onOpen} color={color} n={i + 1} />
                 {slots.get(i)}
-                {i < places.length - 1 && <LegRow leg={legAfter(p)} color={color} />}
+                {i < places.length - 1 && <LegRow leg={legAfter(p)} color={color} from={p} to={nextOf(p)} />}
               </li>
             ))}
           </ol>
-          {hotel && hEnd && <><LegRow leg={legs[legs.length - 1]} color={color} /><HotelRow hotel={hotel} label={index === 0 && !hStart ? "เช็กอินเข้าที่พัก" : "กลับที่พัก"} onOpen={onOpen} /></>}
+          {hotel && hEnd && <><LegRow leg={legs[legs.length - 1]} color={color} from={located[located.length - 1]} to={hotel} /><HotelRow hotel={hotel} label={index === 0 && !hStart ? "เช็กอินเข้าที่พัก" : "กลับที่พัก"} onOpen={onOpen} /></>}
           <div className="mt-4 flex flex-wrap gap-2">
             {dirUrl && <a href={dirUrl} target="_blank" rel="noreferrer" className="inline-flex h-10 items-center gap-1.5 rounded-full bg-ink px-4 text-[14px] font-semibold text-white"><IconRoute size={16} />นำทางทั้งวัน</a>}
             <Button size="sm" variant="secondary" onClick={onAdd}><IconPlus size={16} />เพิ่มที่</Button>

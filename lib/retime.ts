@@ -54,6 +54,7 @@ export function hourRule(s: Pick<RStop, "name" | "category" | "lat" | "lng">, st
   const t = start % (24 * 60);
   if ((s.category === "attraction" || s.category === "other") && DAYTIME.test(s.name) && t >= 16 * 60 + 30) return "อาจปิดแล้วตอนนั้น (ปกติปิด ~17:00)";
   if ((s.category === "nightlife" || BAR.test(s.name)) && t >= 5 * 60 && t < 16 * 60) return "บาร์ส่วนใหญ่ยังไม่เปิดตอนนั้น";
+  if (/music fountain|fountain show|音乐喷泉|噴水ショー|분수쇼/i.test(s.name) && t >= 5 * 60 && t < 18 * 60) return "โชว์น้ำพุมีเฉพาะช่วงค่ำ";
   if ((s.category === "shopping" || s.category === "food") && DAY_MARKET.test(s.name) && !NIGHT_WORD.test(s.name) && t >= 15 * 60 + 30) return "ตลาดกลางวันมักปิดราว 15:00";
   if ((s.category === "cafe" || CAFE_WORD.test(s.name)) && s.category !== "nightlife" && earlyCafes(s.lat, s.lng) && t >= 17 * 60 + 30) return "คาเฟ่แถวนี้มักปิดราว 16:00–17:00";
   return null;
