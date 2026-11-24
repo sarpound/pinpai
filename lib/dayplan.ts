@@ -330,7 +330,14 @@ export async function addHotelTasks(tripId: string, nDays: number, onlyDay: Scop
       const h = stayFor(d - 1);
       add.push({ sort: Number(first.sort_order) - 5, h, dur: 20, name: `🧳 เช็กเอาต์ ${shortHotel(h.name)}`, why: "เช็กเอาต์ แล้วเดินทางไปสนามบิน" });
     }
-    if (d === nDays - 1 && d > 0 && last.category === "transport" && stops.length >= 2) {
+    // departure day that leaves town (Hakone → Tokyo → Narita): check out and take the bags along — no coming back for them
+    const leavesTown = d === nDays - 1 && d > 0 && last.category === "transport" && stops.length >= 2
+      && stops.slice(0, -1).some((r) => r.lat != null && kmBetween(r, stayFor(d - 1)) > 30);
+    if (leavesTown) {
+      const h = stayFor(d - 1);
+      add.push({ sort: Number(first.sort_order) - 5, h, dur: 20, name: `🧳 เช็กเอาต์ ${shortHotel(h.name)}`, why: "เช็กเอาต์ แล้วเอากระเป๋าไปด้วย (วันนี้ไม่ได้กลับมาแถวที่พัก) · สถานีใหญ่มีล็อกเกอร์ฝากกระเป๋า" });
+    }
+    if (!leavesTown && d === nDays - 1 && d > 0 && last.category === "transport" && stops.length >= 2) {
       const h = stayFor(d - 1);
       add.push({ sort: Number(first.sort_order) - 5, h, dur: 15, name: `🧳 เช็กเอาต์ ฝากกระเป๋าไว้ที่ ${shortHotel(h.name)}`, why: "ส่วนใหญ่เช็กเอาต์ก่อน 11:00 ฝากกระเป๋าไว้ที่ล็อบบี้ได้ฟรี" });
       add.push({ sort: Number(last.sort_order) - 5, h, dur: 15, name: `🧳 กลับไปรับกระเป๋าที่ ${shortHotel(h.name)}`, why: "รับกระเป๋าแล้วเดินทางไปสนามบิน" });

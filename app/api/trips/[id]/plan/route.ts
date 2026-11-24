@@ -146,6 +146,11 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
           const k = job.next ?? 0;
           const [from, to] = job.chunks![k];
           const r = await runPlan([from, to], t0);
+          // a block that came back with an empty / one-stop day (the model skipped a day): plan the block once more
+          const thin = await sql`select g.d from generate_series(${Math.max(1, from)}::int, ${Math.min(to, days - 2)}::int) g(d)
+            where (select count(*) from pinpai.places p where p.trip_id = ${id} and p.day_index = g.d and p.category <> 'stay'
+              and coalesce(p.details->>'kind', '') not in ('hotel_task', 'run')) < 2`;
+          if (thin.length && (job.retries ?? 0) < 1) throw new Error(`thin days ${thin.map((x) => x.d).join(",")}`);
           const acc = { added: (job.added ?? 0) + r.added, moved: (job.moved ?? 0) + r.moved, removed: (job.removed ?? 0) + r.removed, done_days: to + 1 };
           if (k + 1 < job.chunks!.length) {
             await handOver({ ...acc, next: k + 1, retries: 0, message: `จัดแล้ว ${to + 1}/${days} วัน` });
