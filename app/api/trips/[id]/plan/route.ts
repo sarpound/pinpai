@@ -447,8 +447,9 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
         const eatsHere = r.it.category === "food" || r.it.category === "cafe";
         const dup = seenVenue.find((v) => keys.some((k) => k === v.key) ||
           (eatsHere && (v.r.it.category === "food" || v.r.it.category === "cafe") && v.r.pt && r.pt && distKm(v.r.pt, r.pt) < 0.03) ||
-          (same(v) && keys.some((k) => Math.min(k.length, v.key.length) >= 5 && (v.key.includes(k) || k.includes(v.key)))) ||
-          (same(v) && v.r.pt && r.pt && distKm(v.r.pt, r.pt) < 0.05));
+          // name containment only within the same kind: "Lingyin Temple Vegetarian Restaurant" is not "Lingyin Temple"
+          (same(v) && eatsHere === (v.r.it.category === "food" || v.r.it.category === "cafe") && keys.some((k) => Math.min(k.length, v.key.length) >= 5 && (v.key.includes(k) || k.includes(v.key)))) ||
+          (same(v) && eatsHere === (v.r.it.category === "food" || v.r.it.category === "cafe") && v.r.pt && r.pt && distKm(v.r.pt, r.pt) < 0.05));
         // …or a venue another day of the trip already has (long trips are planned in blocks)
         const brand = eatsHere ? brandOf(r.label) : "";
         if (!r.existingId && (dup || keys.some((k) => otherKeys.has(k)) || (brand.length >= 2 && brands.has(brand)))) { dropped.add(r); continue; }

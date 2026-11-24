@@ -130,6 +130,13 @@ export async function tidyDays(tripId: string, nDays: number, onlyDay: Scope, de
     for (const r of [...rows]) if ((r.category === "food" || r.category === "cafe") && isAi(r) && /^[^()（]*?(路|大道|大街)\s*(\(|$)|^[^()]*\b(Road|Street|Avenue)\)?\s*$/i.test(r.name.trim()) && !/餐|饭|馆|店|楼|坊|cafe|coffee|restaurant|kitchen/i.test(r.name)) { await drop(r, false); changed = true; }
     // "hotel" / "breakfast" as a restaurant name is a placeholder, not a place
     for (const r of [...rows]) if ((r.category === "food" || r.category === "cafe") && isAi(r) && (/^(the )?(hotel|hotel breakfast|breakfast|อาหารเช้า(ที่)?โรงแรม|โรงแรม|ที่พัก)$/i.test(r.name.trim()) || /^(familymart|family mart|7-eleven|seven-eleven|lawson|ministop|gs25|cu)\b|ファミリーマート|セブン-?イレブン|ローソン/i.test(r.name.trim()))) { await drop(r, false); changed = true; }
+    // breakfast at a dinner place (Peking duck at 07:55) or at a pin we could only guess: let the meal fill find a real morning café
+    const DINNERY = /全聚德|quanjude|peking duck|烤鸭|hot ?pot|火锅|bbq|barbecue|烧烤|yakiniku|焼肉|steak|izakaya|居酒屋|\bpub\b|\bbar\b|buffet|ดินเนอร์|dinner/i;
+    for (const r of [...rows]) {
+      const t0 = hm2(r.start_time);
+      if (!isAi(r) || r.category !== "food" || t0 == null || t0 >= 10 * 60 || r.details?.kind) continue;
+      if (DINNERY.test(`${r.name} ${r.details?.why ?? ""}`) || r.details?.approx) { await drop(r, false); notes.push(`มื้อเช้าไม่น่าเปิด: ${r.name}`); changed = true; }
+    }
     // arrival
     if (d === 0) {
       const arr = rows.find((r) => r.category === "transport" && AIRPORT.test(r.name));
@@ -187,8 +194,24 @@ export async function tidyDays(tripId: string, nDays: number, onlyDay: Scope, de
       const { sunTimes, tzOffsetMin } = await import("./geo");
       for (const r of rows) {
         if (!isAi(r) || r.lat == null || r.category === "food" || r.details?.kind) continue;
-        if (!/พระอาทิตย์ตก|sunset|夕阳|日落|夕日/i.test(`${r.name} ${String(r.details?.why ?? "")}`)) continue;
+        const txt = `${r.name} ${String(r.details?.why ?? "")}`;
         const date = new Date(Date.parse(startDate) + d * 864e5).toISOString().slice(0, 10);
+        // sunrise: be there before first light — a summit trek (Batur, Bromo) starts ~2 h before, a viewpoint ~25 min before
+        if (/พระอาทิตย์ขึ้น|sunrise|日出|日の出|해돋이|일출/i.test(txt)) {
+          const sun = sunTimes(r.lat, r.lng!, date, tzOffsetMin(r.lat, r.lng!, date));
+          const rise = sun ? hm2(sun.rise) : null, st = hm2(r.start_time);
+          const trek = /trek|hike|climb|summit|volcano|ภูเขาไฟ|เดินป่า|ปีน|batur|bromo|ijen|fuji|登山/i.test(txt);
+          const [lo, hi, want] = trek ? [150, 60, 120] : [60, 0, 25];
+          if (rise == null || st == null || (st >= rise - lo && st <= rise - hi)) continue;
+          const at = Math.max(3 * 60, rise - want);
+          await sql`update pinpai.places set start_time = ${`${String(Math.floor(at / 60)).padStart(2, "0")}:${String(at % 60).padStart(2, "0")}`},
+            details = details || ${sql.json({ why: `${String(r.details?.why ?? "").replace(/\s*· พระอาทิตย์ขึ้น.*$/, "").slice(0, 220)} · พระอาทิตย์ขึ้น ~${sun!.rise}${trek ? " (ออกเดินก่อนสว่าง)" : ""}` } as never)} where id = ${r.id} and trip_id = ${tripId}`;
+          await sql`update pinpai.places p set sort_order = q.n * 10 from (select id, row_number() over (order by (start_time is null), start_time, sort_order) as n
+            from pinpai.places where trip_id = ${tripId} and day_index = ${d} and category <> 'stay') q where p.id = q.id`;
+          notes.push(`ย้ายชมพระอาทิตย์ขึ้นเป็น ${sun!.rise}: ${r.name}`); changed = true;
+          continue;
+        }
+        if (!/พระอาทิตย์ตก|sunset|夕阳|日落|夕日/i.test(txt)) continue;
         const sun = sunTimes(r.lat, r.lng!, date, tzOffsetMin(r.lat, r.lng!, date));
         const set = sun ? hm2(sun.set) : null, st = hm2(r.start_time);
         if (set == null || st == null || (st >= set - 75 && st <= set)) continue;
@@ -202,6 +225,13 @@ export async function tidyDays(tripId: string, nDays: number, onlyDay: Scope, de
       }
     }
     for (const r of [...rows]) if (isAi(r) && CLOSED.test(r.name)) { await drop(r, false); notes.push(`ปิดถาวร: ${r.name}`); changed = true; }
+    // a sight squeezed in after 22:00 (a theatre at 22:20, a park at 23:00) — the day ran out; night markets, bars, views and shows that really run late stay
+    const NIGHTOK = /night|ไนท์|ตลาดนัด|ตลาดกลางคืน|夜市|夜景|bar|pub|club|rooftop|lounge|view|observ|tower|skytree|จุดชมวิว|ถนนคนเดิน|walking street|light|cruise|ล่องเรือ|show|โชว์|cabaret|izakaya|yokocho|golden gai|karaoke|onsen|sauna|jjimjil|massage|นวด|spa|dongdaemun|street|街/i;
+    for (const r of [...rows]) {
+      const t0 = hm2(r.start_time);
+      if (!isAi(r) || t0 == null || t0 < 22 * 60 || ["food", "cafe", "nightlife", "transport", "stay"].includes(r.category) || r.details?.kind || NIGHTOK.test(`${r.name} ${r.details?.why ?? ""}`)) continue;
+      await drop(r, true); notes.push(`ดึกเกินไป ย้ายไปรอจัด: ${r.name}`); changed = true;
+    }
     // one dinner per evening, one lunch per midday
     const MEALY = /dinner|lunch|buffet|ดินเนอร์|บุฟเฟ่ต์|มื้อ/i;
     for (const [a, b] of [[660, 900], [1050, 1410]]) {
@@ -400,9 +430,13 @@ export async function addRunRoutes(tripId: string, nDays: number, onlyDay: Scope
     }
     for (const r of aiRuns) await sql`delete from pinpai.places where id = ${r.id} and trip_id = ${tripId}`;
     // a different route each morning; a route that needs a taxi ride (> 4 km) only every other morning
+    // a different route each morning: with fewer than 3 routes next door, mix in the ones a short taxi away (≤ 10 km)
+    // so it isn't the same riverside 5 days running; far-only cities get a run every other morning
     const near = routes.filter((r) => r.fromHotelKm <= 4);
-    const pool = near.length ? near : routes;
-    if (!near.length && (d % 2 === 0)) { k++; continue; }
+    const reach = routes.filter((r) => r.fromHotelKm > 4 && r.fromHotelKm <= 10);
+    const pool = near.length >= 3 || !reach.length ? (near.length ? near : routes)
+      : near.flatMap((r, i) => [r, ...(reach[i] ? [reach[i]] : [])]).concat(reach.slice(near.length));
+    if (!near.length && !reach.length && (d % 2 === 0)) { k++; continue; }
     const route = pool[k++ % pool.length];
     const first = stops.find((r) => !aiRuns.includes(r));
     const fromHotel = route.fromHotelKm;
