@@ -111,8 +111,9 @@ export default function PlaceDetail({ place, tripId, token, me, members, dayOpti
       </div>
       {onShare && <button onClick={onShare} className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-full border border-line bg-surface text-[14px] font-medium hover:bg-sunken">💬 ส่งที่นี่เข้าแชททริป</button>}
       {(() => {
-        const v = place.details as { approx?: boolean; unverified?: boolean; closed?: string; wiki?: { title: string; url: string | null; langs: number | null } };
+        const v = place.details as { elsewhere?: { title: string; km: number }; approx?: boolean; unverified?: boolean; closed?: string; wiki?: { title: string; url: string | null; langs: number | null } };
         if (v?.closed) return <p className="rounded-[14px] bg-[#FDECEC] px-3 py-2 text-[13px] text-ink">⛔ ข้อมูล Wikidata ระบุว่าที่นี่ปิดถาวรแล้ว (ปี {v.closed}) เช็กก่อนไป หรือลบออกจากแผน</p>;
+        if (v?.elsewhere) return <p className="rounded-[14px] bg-[#FFF8E8] px-3 py-2 text-[13px] text-ink">⚠ ชื่อนี้ตรงกับ “{v.elsewhere.title}” ซึ่งอยู่ห่างไป ~{v.elsewhere.km.toLocaleString()} กม. อาจเป็นชื่อที่ผิด ค้นใน{inMainlandChina(place.lat ?? 0, place.lng ?? 0) ? " Amap" : " Google Maps"}ก่อนออกเดินทาง</p>;
         if (v?.unverified) return <p className="rounded-[14px] bg-[#FFF8E8] px-3 py-2 text-[13px] text-ink">⚠ ยังยืนยันไม่ได้ว่าที่นี่มีอยู่จริงและยังเปิดอยู่ (ไม่พบทั้งในแผนที่และ Wikipedia) ค้นชื่อใน Google Maps ก่อนออกเดินทาง</p>;
         return <>
           {v?.approx && <p className="rounded-[14px] bg-[#FFF8E8] px-3 py-2 text-[13px] text-ink">หมุดนี้เป็นตำแหน่งโดยประมาณ แผนที่ยังไม่รู้จักร้านนี้ เช็กที่อยู่จริงในแอปแผนที่ก่อนออกเดินทาง</p>}

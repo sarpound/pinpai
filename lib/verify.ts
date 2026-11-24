@@ -51,12 +51,15 @@ function langsFor(name: string, lat: number, lng: number) {
 async function match(p: { name: string; lat: number; lng: number; approx: boolean }) {
   const ns = namesOf(p.name), langs = langsFor(p.name, p.lat, p.lng);
   let best: { page: Page; score: number; d: number | null } | null = null;
+  let elsewhere: { title: string; km: number } | null = null;
   const consider = (pages: Page[], nearOnly: boolean) => {
     for (const pg of pages) {
       if (!pg.pageprops?.wikibase_item) continue;
       const sim = Math.max(...ns.map((n) => similar(n, pg.title.replace(/\s*\(.*\)\s*$/, ""))));
       const c = pg.coordinates?.[0];
       const d = c ? distKm({ lat: p.lat, lng: p.lng }, { lat: c.lat, lng: c.lon }) : null;
+      // exactly this name, but a famous place in another city ("National Museum of China" pinned in Hangzhou)
+      if (!nearOnly && d != null && d > 100 && sim >= 0.95 && !elsewhere) elsewhere = { title: pg.title, km: Math.round(d) };
       if (nearOnly && (d == null || d > 2)) continue;
       if (!nearOnly && d != null && d > (p.approx ? 10 : 4)) continue;
       if (!nearOnly && d == null && sim < 0.95) continue;
@@ -70,7 +73,8 @@ async function match(p: { name: string; lat: number; lng: number; approx: boolea
     const s = await Promise.all(langs.flatMap((l) => ns.slice(0, 2).map((n) => wiki(l, { generator: "search", gsrsearch: n, gsrlimit: "4" }))));
     s.forEach((pages) => consider(pages, false));
   }
-  return best as { page: Page; score: number; d: number | null } | null;
+  const b = best as { page: Page; score: number; d: number | null } | null;
+  return b ?? (elsewhere ? { elsewhere } : null);
 }
 
 /** sitelink counts + "closed for good" for a batch of Wikidata items (one SPARQL call) */
@@ -105,13 +109,17 @@ export async function verifyTripPlaces(tripId: string, deadline = Date.now() + 6
   if (!rows.length) return { checked: 0, closed: [] as string[] };
   const found = await mapLimit(rows, 3, async (r) => (Date.now() > deadline ? null
     : await match({ name: r.name, lat: r.lat, lng: r.lng, approx: r.details?.approx === true }).catch(() => null)));
-  const ids = [...new Set(found.map((m) => m?.page.pageprops?.wikibase_item).filter((x): x is string => !!x))];
+  const ids = [...new Set(found.map((m) => (m && "page" in m ? m.page.pageprops?.wikibase_item : undefined)).filter((x): x is string => !!x))];
   const f = await facts(ids.slice(0, 50));
   const closed: string[] = [];
   const touchedDays = new Set<number>();
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i], m = found[i];
     if (m === null && Date.now() > deadline) continue;                  // not checked this time
+    if (m && "elsewhere" in m) {
+      await sql`update pinpai.places set details = details || ${sql.json({ verified: true, unverified: true, elsewhere: m.elsewhere } as never)} where id = ${r.id}`;
+      continue;
+    }
     const id = m?.page.pageprops?.wikibase_item;
     const info = id ? f.get(id) : undefined;
     const strict = m && m.score >= 0.85 && (m.d == null || m.d <= 2);

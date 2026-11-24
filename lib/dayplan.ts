@@ -135,7 +135,7 @@ export async function tidyDays(tripId: string, nDays: number, onlyDay: Scope, de
     for (const r of [...rows]) {
       const t0 = hm2(r.start_time);
       if (!isAi(r) || r.category !== "food" || t0 == null || t0 >= 10 * 60 || r.details?.kind) continue;
-      if (DINNERY.test(`${r.name} ${r.details?.why ?? ""}`) || r.details?.approx) { await drop(r, false); notes.push(`มื้อเช้าไม่น่าเปิด: ${r.name}`); changed = true; }
+      if (DINNERY.test(`${r.name} ${r.details?.why ?? ""}`)) { await drop(r, false); notes.push(`มื้อเช้าไม่น่าเปิด: ${r.name}`); changed = true; }
     }
     // arrival
     if (d === 0) {
@@ -514,8 +514,17 @@ export async function fillMissingMeals(tripId: string, nDays: number, onlyDay: S
       const home = h0 && (!mid || kmBetween(h0, mid) <= 25) ? h0 : null;
       const near = (meal === "breakfast" || endsEarly) && home ? home : before ? { lat: before.r.lat!, lng: before.r.lng! } : null;
       if (!near) continue;
-      const list = await eateriesNear(near, meal === "breakfast" ? "cafe" : "restaurant", food.includes("halal") ? "halal" : food.includes("veg") ? "veg" : null).catch(() => []);
-      const e = pickEatery(list, { near, at, meal, food, used, spicyOk });
+      const diet = food.includes("halal") ? "halal" : food.includes("veg") ? "veg" : null;
+      // breakfast: cafés by the run / hotel first, then any restaurant there (lakesides and causeways have few mapped cafés)
+      const tries: [{ lat: number; lng: number }, "cafe" | "restaurant"][] = meal === "breakfast"
+        ? [[near, "cafe"], ...(home && home !== near ? [[home, "cafe"] as [{ lat: number; lng: number }, "cafe"]] : []), [near, "restaurant"], ...(home && home !== near ? [[home, "restaurant"] as [{ lat: number; lng: number }, "restaurant"]] : [])]
+        : [[near, "restaurant"]];
+      let e: ReturnType<typeof pickEatery> | null = null;
+      for (const [pt, kind] of tries) {
+        if (Date.now() > deadline) break;
+        e = pickEatery(await eateriesNear(pt, kind, diet).catch(() => []), { near: pt, at, meal, food, used, spicyOk });
+        if (e) break;
+      }
       if (!e) continue;
       used.add(norm(e.name));
       const after = timed.filter((x) => x.t <= at).pop()?.r;
