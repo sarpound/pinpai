@@ -59,6 +59,10 @@ const HOTEL_TASK = "hotel_task";
 const shortHotel = (n: string) => (/\(([^()]*[A-Za-z][^()]*)\)\s*$/.exec(n)?.[1] ?? n).slice(0, 48);
 const hm2 = (t: string | null) => (t && /^\d{2}:\d{2}/.test(t) ? Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5)) : null);
 
+/** which days a post-pass touches: one day, a block of days (long trips are planned a few days at a time), or all */
+export type Scope = number | [number, number] | null;
+export const inScope = (d: number, sc: Scope) => sc == null || (typeof sc === "number" ? d === sc : d >= sc[0] && d <= sc[1]);
+
 const AIRPORT = /airport|สนามบิน|空港|공항|機場|机场|aéroport|aeropuerto|aeroporto|flughafen|luchthaven|lapangan terbang|bandara/i;
 const TRANSFER = /express|arex|limousine|shuttle|airport (train|bus|link|rail)|rail ?link|skytrain to|narita express|n'ex|keisei|skyliner|heathrow express|rer b|klia ekspres|airport line|แอร์พอร์ต ?เรล|รถไฟฟ้า.*สนามบิน|공항철도|机场快线/i;
 // famous places that closed for good but free models still suggest
@@ -83,14 +87,14 @@ const renumber = (tripId: string, d: number) => sql`update pinpai.places p set s
  * - two dinners (or two lunches) in one sitting → the later one goes to the wishlist
  * - vegetarian / halal groups: an obviously meat / pork / bar place is swapped for a mapped veg / halal one nearby
  */
-export async function tidyDays(tripId: string, nDays: number, onlyDay: number | null, deadline: number) {
+export async function tidyDays(tripId: string, nDays: number, onlyDay: Scope, deadline: number) {
   const [t] = await sql`select prefs from pinpai.trips where id = ${tripId}`;
   const food: string[] = t?.prefs?.food ?? [];
   const arrive: string | null = typeof t?.prefs?.arrive_time === "string" && HHMM.test(t.prefs.arrive_time) ? t.prefs.arrive_time : null;
   const diet = food.includes("halal") ? "halal" : food.includes("veg") ? "veg" : null;
   const notes: string[] = [];
   for (let d = 0; d < nDays; d++) {
-    if (onlyDay != null && d !== onlyDay) continue;
+    if (!inScope(d, onlyDay)) continue;
     let rows = (await loadDay(sql, tripId, d)).filter((r) => r.category !== "stay");
     const drop = async (r: DayRow, wish: boolean) => {
       if (wish) await sql`update pinpai.places set day_index = null, start_time = null where id = ${r.id} and trip_id = ${tripId}`;
@@ -224,14 +228,14 @@ export async function tidyDays(tripId: string, nDays: number, onlyDay: number | 
  * - departure day: check out and leave bags at the hotel → … → back for the bags → airport
  * Re-planning removes and re-adds them (they are AI stops); a person can still drag or delete them.
  */
-export async function addHotelTasks(tripId: string, nDays: number, onlyDay: number | null) {
+export async function addHotelTasks(tripId: string, nDays: number, onlyDay: Scope) {
   const stays = (await sql`select id, name, lat::float8 as lat, lng::float8 as lng, day_index from pinpai.places
     where trip_id = ${tripId} and category = 'stay' and lat is not null and day_index is not null order by day_index`) as unknown as { id: string; name: string; lat: number; lng: number; day_index: number }[];
   if (!stays.length || nDays < 2) return [] as number[];
   const stayFor = (d: number) => stays.filter((s) => s.day_index <= d).pop() ?? stays[0];
   const touched: number[] = [];
   for (let d = 0; d < nDays; d++) {
-    if (onlyDay != null && d !== onlyDay) continue;
+    if (!inScope(d, onlyDay)) continue;
     const rows = await loadDay(sql, tripId, d);
     if (rows.some((r) => r.details?.kind === HOTEL_TASK)) continue;
     const stops = rows.filter((r) => r.category !== "stay");
@@ -317,7 +321,7 @@ export async function addHotelTasks(tripId: string, nDays: number, onlyDay: numb
  * (it is often a same-named park somewhere else). Cities without curated routes keep the AI's run only if it is
  * close to the hotel.
  */
-export async function addRunRoutes(tripId: string, nDays: number, onlyDay: number | null) {
+export async function addRunRoutes(tripId: string, nDays: number, onlyDay: Scope) {
   const [t] = await sql`select prefs, dest_lat::float8 as lat, dest_lng::float8 as lng from pinpai.trips where id = ${tripId}`;
   if (!t || !(t.prefs?.wants ?? []).includes("run") || nDays < 3) return [] as number[];
   const [stay] = await sql`select lat::float8 as lat, lng::float8 as lng from pinpai.places where trip_id = ${tripId} and category = 'stay' and lat is not null order by day_index nulls last limit 1`;
@@ -329,7 +333,7 @@ export async function addRunRoutes(tripId: string, nDays: number, onlyDay: numbe
   const touched: number[] = [];
   let k = 0;
   for (let d = 1; d < nDays - 1; d++) {
-    if (onlyDay != null && d !== onlyDay) { k++; continue; }
+    if (!inScope(d, onlyDay)) { k++; continue; }
     const rows = await loadDay(sql, tripId, d);
     const stops = rows.filter((r) => r.category !== "stay");
     if (rows.some((r) => r.details?.kind === "run" || (RUNLIKE.test(r.name) && (r.details?.user_edited || r.details?.fixed_time)))) { k++; continue; }
@@ -373,7 +377,7 @@ export async function addRunRoutes(tripId: string, nDays: number, onlyDay: numbe
  * still missing gets a real restaurant from OpenStreetMap next to the stop before it (open at that time, matching
  * the group's food focus, not already used in the trip). Marked so the UI can say where it came from.
  */
-export async function fillMissingMeals(tripId: string, nDays: number, onlyDay: number | null, deadline: number) {
+export async function fillMissingMeals(tripId: string, nDays: number, onlyDay: Scope, deadline: number) {
   const [t] = await sql`select prefs from pinpai.trips where id = ${tripId}`;
   const meals: string[] = t?.prefs?.meals?.length ? t.prefs.meals : ["breakfast", "lunch", "dinner"];
   const food: string[] = t?.prefs?.food ?? [];
@@ -386,7 +390,7 @@ export async function fillMissingMeals(tripId: string, nDays: number, onlyDay: n
   const [stay] = await sql`select lat::float8 as lat, lng::float8 as lng from pinpai.places where trip_id = ${tripId} and category = 'stay' and lat is not null order by day_index nulls last limit 1`;
   let filled = 0;
   for (let d = 0; d < nDays && Date.now() < deadline && filled < 10; d++) {
-    if (onlyDay != null && d !== onlyDay) continue;
+    if (!inScope(d, onlyDay)) continue;
     const rows = (await loadDay(sql, tripId, d)).filter((r) => r.category !== "stay");
     const wrap = (t: number | null) => (t == null ? null : t < 5 * 60 ? t + 24 * 60 : t);
     const timed = rows.map((r) => ({ r, t: wrap(hm2(r.start_time)) })).filter((x): x is { r: DayRow; t: number } => x.t != null);
@@ -458,7 +462,7 @@ const WANT_Q: Record<string, { q: string[]; at: number | "sunset" | "sunrise"; d
   hike: { q: ["trailhead", "nature reserve", "viewpoint"], at: 8 * 60, dur: 150, cat: "nature", th: "เดินป่า/เดินเขา", near: "hotel" },
 };
 
-export async function ensureWants(tripId: string, nDays: number, onlyDay: number | null, deadline: number) {
+export async function ensureWants(tripId: string, nDays: number, onlyDay: Scope, deadline: number) {
   const [t] = await sql`select prefs, start_date from pinpai.trips where id = ${tripId}`;
   const wants: string[] = (t?.prefs?.wants ?? []).filter((w: string) => WANT_Q[w]);
   if (!wants.length) return [] as string[];

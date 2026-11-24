@@ -900,7 +900,7 @@ export default function TripApp({ tripId, importUrl, openPlan }: { tripId: strin
               <button onClick={() => go({ kind: "plan" })} className="mb-3 flex w-full items-center gap-3 rounded-[16px] bg-ink px-4 py-3 text-left text-white" role="status">
                 <span className="size-5 shrink-0 animate-spin rounded-full border-2 border-white/30 border-t-lime" aria-hidden />
                 <span className="min-w-0 flex-1">
-                  <span className="block text-[15px] font-semibold">{planJob?.only_day != null ? `กำลังจัดวันที่ ${planJob.only_day + 1} ใหม่…` : "กำลังจัดทริปให้อยู่…"}</span>
+                  <span className="block text-[15px] font-semibold">{planJob?.only_day != null ? `กำลังจัดวันที่ ${planJob.only_day + 1} ใหม่…` : planJob?.chunked && planJob.message ? `กำลังจัดทริป… ${planJob.message}` : "กำลังจัดทริปให้อยู่…"}</span>
                   <span className="block truncate text-[12px] text-white/70">{planJob?.by ? `${planJob.by} กดจัดไว้ · ` : ""}เสร็จแล้วแผนจะขึ้นเองทุกเครื่อง</span>
                 </span>
               </button>

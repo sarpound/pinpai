@@ -520,8 +520,12 @@ export async function planTrip(input: {
   existing: { name: string; day: number | null; category: string; time?: string | null }[];
   /** re-plan just one day of a longer trip */
   single?: { day: number; total: number; avoid: string[]; hotel?: string | null };
+  /** long trips: plan days from..to (0-based) of the whole trip, following the outline written first */
+  range?: { from: number; to: number; total: number; brief: { day: number; base: string; area: string; theme: string; hotel: string | null }[]; avoid: string[] };
 }, meter?: Meter): Promise<TripPlan> {
   const one = input.single;
+  const rg = one ? undefined : input.range;
+  const hasArrival = !one && (!rg || rg.from === 0), hasDeparture = !one && (!rg || rg.to === rg.total - 1);
   const noSpicy = (input.food ?? []).includes("mild") || NO_SPICY.test(input.note ?? "");
   const dayKind = one ? (one.day === 0 ? "the ARRIVAL day (starts in the afternoon, lighter)" : one.day === one.total - 1 ? "the DEPARTURE day (ends early, finish near the airport/station)" : "a FULL day (morning to night)") : "";
   const perDay = input.pace === "relaxed" ? "3-4" : input.pace === "packed" ? "6-7" : "4-5";
@@ -548,15 +552,19 @@ export async function planTrip(input: {
       (one ? `Plan ONLY ONE DAY: day ${one.day} (0-based) of a ${one.total}-day trip${input.startDate ? `, date ${input.startDate}` : ""}. It is ${dayKind}. Return exactly one entry in days with day = ${one.day} and stays = [].\n` +
         (one.hotel ? `Staying at: ${one.hotel} — start and end the day near it\n` : "") +
         (one.avoid.length ? `Other days already visit (do NOT repeat): ${one.avoid.slice(0, 60).join("; ")}\n` : "")
+        : rg ? `This is part of a ${rg.total}-day trip. Plan ONLY days ${rg.from}-${rg.to} (0-based)${input.startDate ? `; day ${rg.from} is ${input.startDate}` : ""}. Return exactly these days with these day numbers, and stays = [].\n` +
+          `Follow this outline (base city, area, theme, hotel) — every stop of a day stays in or near its area:\n${rg.brief.map((b) => `- day ${b.day}: ${b.base} · ${b.area} · ${b.theme}${b.hotel ? ` · hotel ${b.hotel}` : ""}`).join("\n")}\n` +
+          (rg.from > 0 ? `Day ${rg.from} is a normal full day (the group is already there); a day that starts in a new base city begins with the transfer (train/bus/flight as a transport stop) in the morning.\n` : "") +
+          (rg.avoid.length ? `Other days of the trip already visit (do NOT repeat): ${rg.avoid.slice(0, 80).join("; ")}\n` : "")
         : `Days: ${input.days}${input.startDate ? ` starting ${input.startDate}` : ""}\n`) +
       `Travellers: ${input.travelers}\nStyle: ${input.styles.join(", ") || "balanced"}\nStops per day (excluding hotel): ${perDay}\n` +
       `Travelling as: ${{ friends: "a group of friends — fun, food-heavy, lively spots", date: "a couple on a DATE — romantic, scenic, sunset spots, cosy/nice restaurants for dinner, photo spots, unhurried, nothing rowdy", family: "a family — easy walking, kid/elderly friendly, rest breaks, early dinners", solo: "solo — flexible, safe areas, counter seating ok" }[input.companions ?? "friends"] ?? "friends"}\n` +
       `Meals to schedule each full day: ${(input.meals?.length ? input.meals : ["breakfast", "lunch", "dinner"]).map((m) => ({ breakfast: "breakfast 07:30-09:00 (near the hotel)", lunch: "lunch 11:30-13:30", dinner: "dinner 18:00-20:00", snack: "afternoon café/dessert 14:30-16:30", late: "late-night food after 21:00" }[m])).filter(Boolean).join("; ")} (arrival day and departure day: only the meals that fit)\n` +
       (input.food?.length ? `Food focus: ${input.food.map((f) => ({ local: "signature local dishes at places locals rate", street: "street food / night-market stalls", famous: "famous or Michelin/Bib Gourmand restaurants", seafood: "seafood", thai: "at least one Thai restaurant during the trip", mild: "NOT spicy — pick places with mild options", halal: "HALAL only", veg: "vegetarian-friendly only" }[f])).filter(Boolean).join("; ")}\n` : "") +
       (input.wants?.length ? `Activities the group asked for (each at least once, say in why that it was requested): ${input.wants.map((w) => WANT_EN[w]).filter(Boolean).join("; ")}\n` : "") +
-      (one ? "" : `Arrival: ${input.arrive_time ? `lands/arrives at ${input.arrive_time} on day 0` : "around early afternoon on day 0 (time unknown)"}. Departure: ${input.depart_time ? `flight/train leaves at ${input.depart_time} on the last day — be at the airport/station 2.5 hours before` : "last day, time unknown — finish sightseeing by 16:00 then go to the airport/station"}.\n`) +
+      (!hasArrival && !hasDeparture ? "" : `Arrival: ${!hasArrival ? "not in these days" : input.arrive_time ? `lands/arrives at ${input.arrive_time} on day 0` : "around early afternoon on day 0 (time unknown)"}. Departure: ${!hasDeparture ? "not in these days — no airport at the end" : input.depart_time ? `flight/train leaves at ${input.depart_time} on the last day — be at the airport/station 2.5 hours before` : "last day, time unknown — finish sightseeing by 16:00 then go to the airport/station"}.\n`) +
       (input.must ? `MUST include these (place them on the most sensible day, keep the user's wording in why): ${input.must}\n` : "") +
-      (input.budgetTHB ? `Hotel: at most about ${Math.max(600, Math.round((input.budgetTHB * 0.35 * Math.min(2, input.travelers)) / Math.max(1, (one ? one.total : input.days) - 1) / 100) * 100)} THB per room per night (so the whole trip fits the cap) — pick a well-located 3-4 star or boutique hotel, not a luxury one\n` : "") +
+      (input.budgetTHB ? `Hotel: at most about ${Math.max(600, Math.round((input.budgetTHB * 0.35 * Math.min(2, input.travelers)) / Math.max(1, (one ? one.total : rg ? rg.total : input.days) - 1) / 100) * 100)} THB per room per night (so the whole trip fits the cap) — pick a well-located 3-4 star or boutique hotel, not a luxury one\n` : "") +
       `Budget level: ${input.budget}${input.budgetTHB ? ` — HARD CAP about ${Math.round(input.budgetTHB)} THB per person for the whole trip including hotel and flights; pick hotels, food and paid sights that fit` : ""}\nGetting around: ${modeTh}\n` +
       (input.note ? `Group note — treat every restriction in it as a HARD rule (allergies, "no spicy", mobility, dislikes): ${input.note}\n` : "") +
       (noSpicy ? "Someone in the group does NOT eat spicy food: no Sichuan, Hunan, Chongqing, hot pot, mala or Yunnan-spicy restaurants at all; pick mild cuisines.\n" : "") +
@@ -570,13 +578,15 @@ export async function planTrip(input: {
     maxOutputTokens: 12000,
   }, meter);
   // tour-leader QA: drop pseudo stops (check-in, hotel as a stop), then make sure every requested meal is a real restaurant
-  const nDays = one ? one.total : input.days;
-  const rawDays = one ? plan.days.slice(0, 1).map((d) => ({ ...d, day: one.day })) : plan.days;
-  if (one) plan.stays = [];
-  let days = rawDays.filter((d) => d.day >= 0 && d.day < nDays)
+  const nDays = one ? one.total : rg ? rg.total : input.days;
+  const rawDays = one ? plan.days.slice(0, 1).map((d) => ({ ...d, day: one.day }))
+    // a model that numbered the chunk 0..n instead of from..to: shift it back
+    : rg ? plan.days.map((d, i) => ({ ...d, day: d.day >= rg.from && d.day <= rg.to ? d.day : rg.from + i })) : plan.days;
+  if (one || rg) plan.stays = [];
+  let days = rawDays.filter((d) => d.day >= 0 && d.day < nDays && (!rg || (d.day >= rg.from && d.day <= rg.to)))
     .map((d) => ({ ...d, stops: fixSchedule(d.stops.map(cleanName).filter((x) => x.category !== "stay" && !PSEUDO.test(`${x.name} ${x.name_local ?? ""}`)).slice(0, 10)) }));
   const arr = input.arrive_time ? toMin(input.arrive_time) : null;
-  if (arr != null && !one) days = days.map((d) => (d.day !== 0 ? d : { ...d, stops: d.stops.filter((x) => x.category === "transport" || (toMin(x.start_time) ?? 1e9) >= arr + 30) }));
+  if (arr != null && hasArrival) days = days.map((d) => (d.day !== 0 ? d : { ...d, stops: d.stops.filter((x) => x.category === "transport" || (toMin(x.start_time) ?? 1e9) >= arr + 30) }));
   const late = () => input.deadline != null && Date.now() > input.deadline;
   // ---- hard rules the model keeps breaking (each one came from a real bad plan) ----
   days = days.map((d) => {
@@ -587,7 +597,7 @@ export async function planTrip(input: {
     // 2) temples / museums / gardens are closed in the evening
     stops = stops.filter((x) => !(DAYTIME_ONLY.test(`${x.name} ${x.name_local ?? ""}`) && !eatS(x) && x.category !== "shopping" && (toMin(x.start_time) ?? 0) >= 17 * 60 + 30));
     // last day: nothing far out of town before the flight (Zhujiajiao at 14:30 then the airport)
-    if (!one && nDays > 1 && d.day === nDays - 1) {
+    if (hasDeparture && nDays > 1 && d.day === nDays - 1) {
       const pts = days.flatMap((x) => x.stops).filter((x) => x.lat != null && x.lng != null);
       const mid = pts.length ? { lat: [...pts].sort((a, b) => a.lat! - b.lat!)[Math.floor(pts.length / 2)].lat!, lng: [...pts].sort((a, b) => a.lng! - b.lng!)[Math.floor(pts.length / 2)].lng! } : null;
       if (mid) stops = stops.filter((x) => x.category === "transport" || x.lat == null || (dist(mid, x) ?? 0) < 25);
@@ -608,7 +618,7 @@ export async function planTrip(input: {
   const meals = input.meals?.length ? input.meals : ["breakfast", "lunch", "dinner"];
   // activities the group asked for that the plan forgot → one repair call, each on its own full day at the natural hour
   const missing = (input.wants ?? []).filter((w) => WANT_RE[w] && !days.some((d) => d.stops.some((x) => WANT_RE[w].test(`${x.name} ${x.name_local ?? ""} ${x.why}`))));
-  if (missing.length && !(input.deadline != null && Date.now() > input.deadline + 30_000)) {
+  if (missing.length && !rg && !(input.deadline != null && Date.now() > input.deadline + 30_000)) {
     const pool = days.filter((d) => (nDays <= 2 || (d.day > 0 && d.day < nDays - 1)) && !d.stops.some((x) => BIG.test(x.name)));
     const asks = missing.slice(0, 4).map((w, i) => ({ w, d: (pool.length ? pool : days)[i % Math.max(1, (pool.length ? pool : days).length)] })).filter((a) => a.d);
     try {
@@ -679,7 +689,7 @@ export async function planTrip(input: {
     });
   }
   // departure day ends at the airport/station you arrived at when the plan forgot to say so
-  if (!one && nDays > 1) {
+  if (!one && !rg && nDays > 1) {
     const hub = days.find((d) => d.day === 0)?.stops.find((x) => x.category === "transport");
     const last = days.find((d) => d.day === nDays - 1);
     if (hub && last && !last.stops.some((x) => x.category === "transport")) {
@@ -702,6 +712,57 @@ export async function planTrip(input: {
       .map((st, i, kept) => (kept.length === 1 ? { ...st, check_in_day: 0, nights: Math.max(1, nDays - 1) } : st)),
     tips: plan.tips.slice(0, 6),
   };
+}
+
+const outlineSchema = planSchema.omit({ days: true }).extend({
+  stays: z.array(z.object({
+    name: z.string(), name_local: z.string().nullable(), area: z.string().describe("Neighbourhood, Thai"),
+    lat: z.number().nullable(), lng: z.number().nullable(),
+    check_in_day: z.number().describe("0-based day index"), nights: z.number(),
+    price: z.string().describe("Thai, price per night range in THB"), why: z.string().describe("Thai, one line"),
+  })).describe("one hotel per base city/region, in order, covering every night; a base is kept at least 3 nights unless the route really needs a stopover"),
+  days: z.array(z.object({
+    day: z.number().describe("0-based"),
+    base: z.string().describe("city / region the group sleeps in that night, English"),
+    area: z.string().describe("the district or day-trip destination for that day, English, specific"),
+    theme: z.string().describe("Thai, short title for the day"),
+  })).describe("every day of the trip, in order"),
+  assign: z.array(z.object({ name: z.string(), day: z.number() })).describe("each place the group already saved → the 0-based day it fits best"),
+});
+export type TripOutline = z.infer<typeof outlineSchema>;
+
+/** Long trips (a week to a couple of months): first the shape — bases, a hotel per base, one area per day, saved places assigned —
+ *  then the days are planned a few at a time (planTrip with range), each in its own request so nothing times out. */
+export async function planOutline(input: {
+  destination: string; days: number; startDate: string | null; styles: string[]; pace: string; budget: string; mode: string;
+  travelers: number; note: string | null; budgetTHB?: number | null; companions?: string; food?: string[]; must?: string | null;
+  wants?: string[]; arrive_time?: string | null; depart_time?: string | null; existing: { name: string; day: number | null }[];
+}, meter?: Meter): Promise<TripOutline> {
+  const out = await gen<TripOutline>({
+    model: MODEL,
+    instructions:
+      "You are an expert Thai travel planner designing the SHAPE of a long trip for Thai travellers (the daily stops are planned later). " +
+      "Pick a realistic route of bases (cities/regions) for the whole trip — no zig-zag, sensible transfers, at least 3 nights per base unless a stopover really helps, " +
+      "rest/light days every 5-7 days on long trips, weather and season aware for these dates. For each day give the base, ONE specific area or day-trip destination, and a short Thai theme; " +
+      "no area repeats unless it is the base's centre; a transfer day between bases is light. Day 0 starts on arrival, the last day ends at the departure airport/station. " +
+      "One hotel per base (well located, real, operating), covering every night. Assign every saved place to the day whose area it belongs to. All user-facing text in natural Thai.",
+    prompt:
+      `Destination: ${input.destination}\nDays: ${input.days}${input.startDate ? ` starting ${input.startDate}` : ""}\nTravellers: ${input.travelers} (${input.companions ?? "friends"})\n` +
+      `Style: ${input.styles.join(", ") || "balanced"} · pace ${input.pace} · budget ${input.budget}${input.budgetTHB ? ` (about ${Math.round(input.budgetTHB)} THB per person in total)` : ""} · getting around: ${input.mode}\n` +
+      (input.food?.length ? `Food: ${input.food.join(", ")}\n` : "") +
+      (input.wants?.length ? `Activities they want during the trip: ${input.wants.map((w) => WANT_EN[w]).filter(Boolean).join("; ")} — give them suitable days/areas\n` : "") +
+      `Arrival: ${input.arrive_time ?? "unknown time"} on day 0. Departure: ${input.depart_time ?? "unknown time"} on day ${input.days - 1}.\n` +
+      (input.must ? `MUST include: ${input.must}\n` : "") + (input.note ? `Group note (hard rules): ${input.note}\n` : "") +
+      (input.existing.length ? `Saved places to assign: ${input.existing.map((e) => `${e.name}${e.day != null ? ` [day ${e.day}]` : ""}`).join("; ")}\n` : ""),
+    output: Output.object({ schema: outlineSchema }),
+    maxOutputTokens: Math.min(9000, 2500 + input.days * 90),
+  }, meter);
+  // every day present, in range, in order
+  const byDay = new Map(out.days.filter((d) => d.day >= 0 && d.day < input.days).map((d) => [Math.round(d.day), d]));
+  let prev = out.days[0] ?? { day: 0, base: input.destination, area: input.destination, theme: "" };
+  out.days = Array.from({ length: input.days }, (_, i) => { const d = byDay.get(i) ?? { ...prev, day: i, theme: prev.theme }; prev = d; return { ...d, day: i }; });
+  out.stays = out.stays.filter((s) => s.check_in_day >= 0 && s.check_in_day < input.days).sort((a, b) => a.check_in_day - b.check_in_day).slice(0, 12);
+  return out;
 }
 
 const translateSchema = z.object({ queries: z.array(z.string()).describe("1-3 search strings: official English name, local-language name, romanized") });

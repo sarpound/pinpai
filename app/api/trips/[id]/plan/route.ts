@@ -1,12 +1,13 @@
 import { NextResponse, after } from "next/server";
 import { sql, bumpVersion, logActivity } from "@/lib/db";
 import { handle, requireMember, readJson, str, num, HttpError } from "@/lib/auth";
-import { planTrip, settleDay, mealsNear, stopRules } from "@/lib/ai";
+import { planTrip, planOutline, settleDay, mealsNear, stopRules } from "@/lib/ai";
+import { randomUUID } from "crypto";
 import { notify } from "@/lib/push";
 import { resolvePlace, medianOffset, distKm, sunTimes, tzOffsetMin } from "@/lib/geo";
 import { mapLimit, fillTripPhotos } from "@/lib/photos";
 import { aiBudget } from "@/lib/limits";
-import { retimeStored, addHotelTasks, addRunRoutes, fillMissingMeals, tidyDays, ensureWants } from "@/lib/dayplan";
+import { retimeStored, addHotelTasks, addRunRoutes, fillMissingMeals, tidyDays, ensureWants, inScope, type Scope } from "@/lib/dayplan";
 import { verifyTripPlaces } from "@/lib/verify";
 import { hourRule } from "@/lib/retime";
 
@@ -20,21 +21,35 @@ const MEALS = ["breakfast", "lunch", "dinner", "snack", "late"];
 const WANTS = ["run", "massage", "hike", "bike", "onsen", "beach", "show", "cooking", "sunrise", "sunset", "museum", "kids"];
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 const norm = (s: string) => s.toLowerCase().replace(/[\s()\-.,'’]+/g, "");
+// a trip longer than this is planned as an outline first, then CHUNK days per request (each request stays well under the 300 s limit)
+const LONG = 7, CHUNK = 4, MAX_DAYS = 45;
 
 /** One tap: plan the whole trip (days, meals, hotels, transport guide) and write it into the trip. */
 export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan">) {
   return handle(async () => {
     const { id } = await ctx.params;
-    const me = await requireMember(req, id);
     const body = await readJson(req);
+    // long trips continue themselves: the previous block hands over with a one-time key (no user session in that request)
+    const cont = typeof body.continue === "string" ? body.continue : null;
+    let me: { id: string; name: string };
+    let job0: Record<string, unknown> | null = null;
+    if (cont) {
+      const fresh = randomUUID();
+      const [claimed] = await sql`update pinpai.trips set plan_job = plan_job || ${sql.json({ nonce: fresh, started_at: new Date().toISOString() } as never)}
+        where id = ${id} and plan_job->>'state' = 'running' and plan_job->>'nonce' = ${cont} returning plan_job`;
+      if (!claimed) throw new HttpError(409, "stale continuation");
+      job0 = claimed.plan_job;
+      me = { id: String(job0!.by_id ?? ""), name: String(job0!.by ?? "") };
+    } else me = await requireMember(req, id);
     const [trip] = await sql`select destination, dest_lat::float8 as lat, dest_lng::float8 as lng, start_date::text, end_date::text, prefs as cur_prefs, guide from pinpai.trips where id = ${id}`;
     if (!trip.destination) throw new HttpError(400, "ใส่จุดหมายของทริปก่อน");
     if (!trip.start_date || !trip.end_date) throw new HttpError(400, "ตั้งวันไป–กลับก่อน แล้วค่อยให้จัดทริป");
-    const days = Math.min(14, Math.round((Date.parse(trip.end_date) - Date.parse(trip.start_date)) / 864e5) + 1);
+    const days = Math.round((Date.parse(trip.end_date) - Date.parse(trip.start_date)) / 864e5) + 1;
+    if (days > MAX_DAYS) throw new HttpError(400, `ทริปยาว ${days} วัน ระบบจัดให้ได้ทีละไม่เกิน ${MAX_DAYS} วัน แบ่งเป็น 2 ทริปก่อนนะ`);
     // "จัดเฉพาะวันนี้": re-plan one day with the trip's saved preferences, leave every other day alone
     const od = num(body.only_day);
-    const onlyDay = od != null && od >= 0 && od < days ? Math.floor(od) : null;
-    const b = onlyDay != null ? { ...(trip.cur_prefs ?? {}), ...body, must: null } : body;
+    const onlyDay = cont ? null : od != null && od >= 0 && od < days ? Math.floor(od) : null;
+    const b = cont ? (trip.cur_prefs ?? {}) : onlyDay != null ? { ...(trip.cur_prefs ?? {}), ...body, must: null } : body;
     const prefs = {
       styles: Array.isArray(b.styles) ? (b.styles as string[]).filter((s) => STYLES.includes(s)).slice(0, 6) : [],
       pace: ["relaxed", "normal", "packed"].includes(b.pace as string) ? (b.pace as string) : "normal",
@@ -76,16 +91,26 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
     // everything on the trip (incl. the previous AI plan): for the hotel and "don't repeat other days" on a single-day re-plan
     const allPlaces = await sql`select name, day_index, category from pinpai.places where trip_id = ${id} and coalesce(details->>'kind', '') not in ('hotel_task', 'run', 'meal_fill')`;
     const meter = await aiBudget(id, "plan");
-    // one planner at a time per trip; a job older than 3 min is considered dead (function timed out)
-    const job = { state: "running", by: me.name, started_at: new Date().toISOString(), days, ...(onlyDay != null ? { only_day: onlyDay } : {}) };
-    const locked = await sql`update pinpai.trips set plan_job = ${sql.json(job as never)} where id = ${id}
-      and (plan_job is null or plan_job->>'state' <> 'running' or (plan_job->>'started_at')::timestamptz < now() - interval '6 minutes') returning id`;
-    if (!locked.length) {
-      const [cur] = await sql`select plan_job from pinpai.trips where id = ${id}`;
-      throw new HttpError(409, `${cur?.plan_job?.by ?? "เพื่อน"} กำลังให้ระบบจัดทริปอยู่ รอสักครู่ เดี๋ยวแผนขึ้นเอง`);
+    const chunked = onlyDay == null && days > LONG;
+    const chunks: [number, number][] = [];
+    for (let d = 0; d < days; d += CHUNK) chunks.push([d, Math.min(days - 1, d + CHUNK - 1)]);
+    // one planner at a time per trip; a job older than 6 min is considered dead (function timed out)
+    type Job = { state: string; by: string; by_id: string; started_at: string; days: number; only_day?: number; chunked?: boolean; chunks?: [number, number][];
+      next?: number; nonce?: string; outlined?: boolean; done_days?: number; added?: number; moved?: number; removed?: number; message?: string };
+    let job: Job;
+    if (cont) job = { ...(job0 as Job) };
+    else {
+      job = { state: "running", by: me.name, by_id: me.id, started_at: new Date().toISOString(), days, ...(onlyDay != null ? { only_day: onlyDay } : {}),
+        ...(chunked ? { chunked: true, chunks, next: 0, nonce: randomUUID(), done_days: 0, added: 0, moved: 0, removed: 0 } : {}) };
+      const locked = await sql`update pinpai.trips set plan_job = ${sql.json(job as never)} where id = ${id}
+        and (plan_job is null or plan_job->>'state' <> 'running' or (plan_job->>'started_at')::timestamptz < now() - interval '6 minutes') returning id`;
+      if (!locked.length) {
+        const [cur] = await sql`select plan_job from pinpai.trips where id = ${id}`;
+        throw new HttpError(409, `${cur?.plan_job?.by ?? "เพื่อน"} กำลังให้ระบบจัดทริปอยู่ รอสักครู่ เดี๋ยวแผนขึ้นเอง`);
+      }
     }
     // remember the choices right away, so they come back even if this run fails or the app is closed
-    if (onlyDay == null) await sql`update pinpai.trips set prefs = coalesce(prefs, '{}'::jsonb) || ${sql.json({ ...prefs, ...money } as never)} where id = ${id}`;
+    if (onlyDay == null && !cont) await sql`update pinpai.trips set prefs = coalesce(prefs, '{}'::jsonb) || ${sql.json({ ...prefs, ...money } as never)} where id = ${id}`;
     await bumpVersion(id);
     // the heavy part runs after we answer: closing the app, going back or losing signal won't stop it
     after(async () => {
@@ -95,9 +120,40 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
           where id = ${id} and plan_job->>'started_at' = ${job.started_at} and plan_job->>'state' = 'running'`.then(() => bumpVersion(id)).catch(() => {});
       }, 285_000);
       try {
-        const r = await runPlan();
-        await sql`update pinpai.trips set plan_job = ${sql.json({ ...job, state: "done", finished_at: new Date().toISOString(), ...r } as never)} where id = ${id}`;
-        await logActivity(id, me.id, onlyDay != null ? `${me.name} ให้ระบบจัดวันที่ ${onlyDay + 1} ใหม่ (${r.added} ที่ใหม่)` : `${me.name} ให้ระบบจัดทริป ${days} วัน (${r.added} ที่ใหม่)`);
+        if (job.chunked) {
+          const t0 = Date.now();
+          // hand over to a fresh request (own 300 s budget); the key changes so each step runs exactly once
+          const handOver = async (patch: Partial<Job>) => {
+            const nonce = randomUUID();
+            const next = { ...job, ...patch, nonce, started_at: new Date().toISOString() };
+            await sql`update pinpai.trips set plan_job = ${sql.json(next as never)} where id = ${id} and plan_job->>'nonce' = ${job.nonce!}`;
+            clearTimeout(watchdog);
+            await bumpVersion(id).catch(() => {});
+            const res = await fetch(new URL(`/api/trips/${id}/plan`, req.url), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ continue: nonce }) }).catch((e) => e as Error);
+            if (res instanceof Error || !res.ok) throw new Error(`continue failed: ${res instanceof Error ? res.message : res.status}`);
+          };
+          if (!job.outlined) {
+            await runOutline();
+            await handOver({ outlined: true, message: `วางเส้นทาง ${days} วันแล้ว กำลังจัดรายวัน` });
+            return;
+          }
+          const k = job.next ?? 0;
+          const [from, to] = job.chunks![k];
+          const r = await runPlan([from, to], t0);
+          const acc = { added: (job.added ?? 0) + r.added, moved: (job.moved ?? 0) + r.moved, removed: (job.removed ?? 0) + r.removed, done_days: to + 1 };
+          if (k + 1 < job.chunks!.length) {
+            await handOver({ ...acc, next: k + 1, message: `จัดแล้ว ${to + 1}/${days} วัน` });
+            return;
+          }
+          // last block: activities still missing anywhere in the trip
+          await ensureWants(id, days, null, t0 + 270_000).catch((e) => console.error("wants", e));
+          await sql`update pinpai.trips set plan_job = ${sql.json({ ...job, ...acc, state: "done", finished_at: new Date().toISOString(), message: null } as never)} where id = ${id}`;
+          await logActivity(id, me.id, `${me.name} ให้ระบบจัดทริป ${days} วัน (${acc.added} ที่ใหม่)`);
+        } else {
+          const r = await runPlan(onlyDay, Date.now());
+          await sql`update pinpai.trips set plan_job = ${sql.json({ ...job, state: "done", finished_at: new Date().toISOString(), ...r } as never)} where id = ${id}`;
+          await logActivity(id, me.id, onlyDay != null ? `${me.name} ให้ระบบจัดวันที่ ${onlyDay + 1} ใหม่ (${r.added} ที่ใหม่)` : `${me.name} ให้ระบบจัดทริป ${days} วัน (${r.added} ที่ใหม่)`);
+        }
       } catch (e) {
         console.error("[plan] failed", e);
         const msg = /AI|Gateway|rate|model/i.test(String(e)) ? "ระบบ AI ไม่ว่างชั่วคราว ลองกดจัดใหม่อีกครั้ง" : "จัดทริปไม่สำเร็จ ลองใหม่อีกครั้ง";
@@ -112,28 +168,71 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
     });
     return NextResponse.json({ started: true, days }, { status: 202 });
 
-    async function runPlan() {
-      const t0 = Date.now();
-      // single day: keep what people picked on that day, don't repeat other days, may pull in nearby wishlist places
-      const fixed = onlyDay == null ? [] : await sql`select p.name, p.start_time, coalesce((p.details->>'fixed_time')::boolean, false) as fixed from pinpai.places p
-        where p.trip_id = ${id} and p.day_index = ${onlyDay} and p.category <> 'stay'
+    /** the long-trip outline: route of bases, a hotel per base, one area per day; saved places get their day; the old AI plan goes */
+    async function runOutline() {
+      const o = await planOutline({ destination: trip.destination, days, startDate: trip.start_date, ...prefs, budgetTHB,
+        existing: existing.map((e) => ({ name: e.name, day: e.day_index })) }, meter);
+      const anchor = trip.lat != null ? { lat: trip.lat, lng: trip.lng } : null;
+      const stays = await mapLimit(o.stays, 4, async (st) => {
+        const guess = st.lat != null && st.lng != null ? { lat: st.lat, lng: st.lng } : null;
+        const loc = await resolvePlace(st.name_local ?? st.name, null, guess ?? anchor, guess ? 12 : 120, { anchor, alt: st.name_local ? st.name : null, category: "stay" }).catch(() => null);
+        return { st, loc: loc ?? (guess ? { ...guess, address: "", approx: true } : null) };
+      });
+      await sql.begin(async (tx) => {
+        await tx`delete from pinpai.places p where p.trip_id = ${id} and p.source = 'ai' and coalesce(p.details->>'planned', '') = 'true'
+          and not p.visited and not (p.details ? 'user_edited') and not exists (select 1 from pinpai.votes v where v.place_id = p.id)`;
+        for (const { st, loc } of stays) {
+          const label = st.name_local && st.name_local !== st.name ? `${st.name_local} (${st.name})` : st.name;
+          await tx`insert into pinpai.places (trip_id, name, category, lat, lng, address, day_index, sort_order, details, source, added_by)
+            values (${id}, ${label.slice(0, 160)}, 'stay', ${loc?.lat ?? null}, ${loc?.lng ?? null}, ${loc?.address ?? null}, ${Math.round(st.check_in_day)}, 0,
+              ${sql.json({ why: `${st.area} · ${st.price} · ${st.why}`, nights: st.nights, planned: true, ...(loc?.approx ? { approx: true } : {}) } as never)}, 'ai', ${me.id})`;
+        }
+        // places the group saved without a day go to the day whose area they belong to
+        for (const a of o.assign ?? []) {
+          const e = existing.find((x) => x.day_index == null && norm(x.name) === norm(a.name));
+          if (e && a.day >= 0 && a.day < days) await tx`update pinpai.places set day_index = ${Math.round(a.day)} where id = ${e.id} and trip_id = ${id} and day_index is null`;
+        }
+        const guide = { summary: o.summary, getting_there: o.getting_there, getting_around: o.getting_around, tips: o.tips,
+          prep: (o.prep ?? []).map((t) => String(t).replace(/[:：]?\s*\+?\d[\d\s().-]{7,}\d/g, " (เช็กเบอร์ล่าสุดจากเว็บทางการ)").trim().slice(0, 200)).filter(Boolean).slice(0, 10),
+          themes: Object.fromEntries(o.days.map((d) => [d.day, d.theme])), outline: o.days.map((d) => ({ day: d.day, base: d.base, area: d.area })),
+          generated_at: new Date().toISOString(),
+          costs: o.costs ? Object.fromEntries(Object.entries(o.costs).map(([k, v]) => [k, typeof v === "number" ? Math.max(0, Math.round(v)) : v])) : undefined };
+        await tx`update pinpai.trips set guide = ${sql.json(guide as never)} where id = ${id}`;
+      });
+    }
+
+    async function runPlan(sc: Scope, t0: number) {
+      const rg = Array.isArray(sc) ? sc : null;
+      const lo = sc == null ? null : typeof sc === "number" ? sc : sc[0], hi = sc == null ? null : typeof sc === "number" ? sc : sc[1];
+      // a day or a block of days: keep what people picked on those days, don't repeat other days
+      const fixed = lo == null ? [] : await sql`select p.name, p.day_index, p.start_time, coalesce((p.details->>'fixed_time')::boolean, false) as fixed from pinpai.places p
+        where p.trip_id = ${id} and p.day_index between ${lo} and ${hi} and p.category <> 'stay'
         and (p.source <> 'ai' or coalesce(p.details->>'planned', '') <> 'true' or p.visited or p.details ? 'user_edited'
           or exists (select 1 from pinpai.votes v where v.place_id = p.id))`;
-      const hotel = allPlaces.filter((e) => e.category === "stay" && (e.day_index ?? 0) <= (onlyDay ?? 0)).sort((x, y) => (y.day_index ?? 0) - (x.day_index ?? 0))[0];
-      const dayDate = onlyDay != null ? new Date(Date.parse(trip.start_date) + onlyDay * 864e5).toISOString().slice(0, 10) : trip.start_date;
+      // the hotel(s) as they are now (a long trip's outline wrote them a moment ago)
+      const stayRows = lo == null ? [] : await sql`select name, day_index, lat::float8 as lat, lng::float8 as lng from pinpai.places where trip_id = ${id} and category = 'stay' order by day_index nulls first`;
+      const stayOn = (d: number) => stayRows.filter((e) => (e.day_index ?? 0) <= d).pop() ?? stayRows[0];
+      const hotel = lo == null ? null : stayOn(lo);
+      const dayDate = lo != null ? new Date(Date.parse(trip.start_date) + lo * 864e5).toISOString().slice(0, 10) : trip.start_date;
+      const outline: { day: number; base: string; area: string }[] = (await sql`select guide->'outline' as o from pinpai.trips where id = ${id}`)[0]?.o ?? [];
+      const themes: Record<string, string> = (await sql`select guide->'themes' as t from pinpai.trips where id = ${id}`)[0]?.t ?? {};
+      const others = (await sql`select name from pinpai.places where trip_id = ${id} and day_index is not null and category <> 'stay'
+        and coalesce(details->>'kind', '') not in ('hotel_task', 'run', 'meal_fill') and not (day_index between ${lo ?? -1} and ${hi ?? -1})`).map((e) => e.name as string);
       const plan = await planTrip({
-        destination: trip.destination, days: onlyDay != null ? 1 : days, startDate: dayDate, ...prefs, budgetTHB,
+        destination: trip.destination, days: lo != null ? hi! - lo + 1 : days, startDate: dayDate, ...prefs, budgetTHB,
         deadline: t0 + 170_000,
         sun: trip.lat != null ? sunTimes(trip.lat, trip.lng, dayDate, tzOffsetMin(trip.lat, trip.lng, dayDate)) : null,
-        existing: onlyDay != null ? fixed.map((e) => ({ name: e.name, day: onlyDay, category: "attraction", time: e.fixed ? e.start_time : null }))
+        existing: lo != null ? fixed.map((e) => ({ name: e.name, day: e.day_index, category: "attraction", time: e.fixed ? e.start_time : null }))
           : existing.map((e) => ({ name: e.name, day: e.day_index, category: e.category, time: e.fixed && e.day_index != null ? e.start_time : null })),
-        ...(onlyDay != null ? { single: { day: onlyDay, total: days, hotel: hotel?.name ?? null,
-          avoid: allPlaces.filter((e) => e.day_index != null && e.day_index !== onlyDay && e.category !== "stay").map((e) => e.name) } } : {}),
+        ...(onlyDay != null ? { single: { day: onlyDay, total: days, hotel: hotel?.name ?? null, avoid: others } } : {}),
+        ...(rg ? { range: { from: rg[0], to: rg[1], total: days, avoid: others,
+          brief: Array.from({ length: rg[1] - rg[0] + 1 }, (_, i) => rg[0] + i).map((d) => { const o = outline.find((x) => x.day === d);
+            return { day: d, base: o?.base ?? trip.destination, area: o?.area ?? trip.destination, theme: themes[d] ?? "", hotel: stayOn(d)?.name ?? null }; }) } } : {}),
       }, meter);
 
       const anchor = trip.lat != null ? { lat: trip.lat, lng: trip.lng } : null;
-      // single day: only re-use places from that day or the wishlist, never steal a stop from another day
-      const byName = new Map(existing.filter((e) => onlyDay == null || e.day_index == null || e.day_index === onlyDay).map((e) => [norm(e.name), e]));
+      // a day / block: only re-use places from those days or the wishlist, never steal a stop from another day
+      const byName = new Map(existing.filter((e) => sc == null || e.day_index == null || inScope(e.day_index, sc)).map((e) => [norm(e.name), e]));
       type Item = { name: string; name_local: string | null; category: string; lat: number | null; lng: number | null; why: string;
         day: number; order: number; start_time: string | null; duration_min: number | null; nights?: number; price?: string };
       const items: Item[] = [];
@@ -197,7 +296,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
       }
       // walk the day in a line: re-order the sights (not meals, airports, timed moments) by nearest neighbour when that is clearly shorter
       const TIMED = /วิ่ง|\brun|jog|sunrise|sunset|พระอาทิตย์|show|โชว์|cruise|ล่องเรือ|night|กลางคืน|ยามค่ำ/i;
-      const hotelPt = first.find((r) => r.it.category === "stay" && r.pt)?.pt ?? null;
+      const hotelPt = first.find((r) => r.it.category === "stay" && r.pt)?.pt ?? (hotel?.lat != null ? { lat: hotel.lat, lng: hotel.lng } : null);
       for (const d of dayIds) {
         const seq = first.filter((r) => r.it.day === d && r.it.category !== "stay").sort((x, y) => x.it.order - y.it.order);
         const mov = seq.filter((r) => r.pt && r.it.category !== "transport" && !TIMED.test(`${r.label} ${r.it.why ?? ""}`) && (r.it.duration_min ?? 0) < 300);
@@ -249,10 +348,10 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
       for (const r of resolved) {
         const e = r.existingId ? exById.get(r.existingId) : null;
         if (!e) continue;
-        if ((e.edited || e.fixed) && e.day_index != null && (onlyDay == null || e.day_index === onlyDay)) r.it.day = e.day_index;
+        if ((e.edited || e.fixed) && e.day_index != null && inScope(e.day_index, sc)) r.it.day = e.day_index;
         if (e.fixed && e.start_time) { r.it.start_time = String(e.start_time).slice(0, 5); (r.it as { fixed?: boolean }).fixed = true; }
       }
-      const hotelAt = resolved.find((r) => r.it.category === "stay" && r.pt)?.pt ?? anchor;
+      const hotelAt = resolved.find((r) => r.it.category === "stay" && r.pt)?.pt ?? (hi != null && stayOn(hi)?.lat != null ? { lat: stayOn(hi)!.lat, lng: stayOn(hi)!.lng } : anchor);
       const dropped = new Set<Res>();
       for (const r of resolved) {
         if (r.existingId || r.it.category === "stay" || r.it.category === "transport") continue;
@@ -261,6 +360,8 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
         if (eat && noSpicy && stopRules.spicy(txt)) dropped.add(r);
         else if (eat && r.loc?.approx && stopRules.generic(r.label)) dropped.add(r);
         else if (days > 1 && r.it.day === days - 1 && onlyDay == null && hotelAt && r.pt && distKm(r.pt, hotelAt) > 25) dropped.add(r);
+        // a block of a long trip: a stop the model put on a day outside the block
+        else if (rg && !inScope(r.it.day, rg)) dropped.add(r);
       }
       // a pin far from both its day and the hotel, while the AI meant somewhere close, is a wrong match (a branch 50 km out of town)
       for (const d of new Set(resolved.map((r) => r.it.day))) {
@@ -337,7 +438,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
       let removed = 0;
       await sql.begin(async (tx) => {
         const del = await tx`delete from pinpai.places p where p.trip_id = ${id} and p.source = 'ai' and coalesce(p.details->>'planned', '') = 'true'
-          and (${onlyDay}::int is null or (p.day_index = ${onlyDay} and p.category <> 'stay'))
+          and (${lo}::int is null or (p.day_index between ${lo} and ${hi} and p.category <> 'stay'))
           and not p.visited and not (p.details ? 'user_edited') and not (p.id = any(${keep}::uuid[])) and not exists (select 1 from pinpai.votes v where v.place_id = p.id)`;
         removed = del.count;
         for (const r of finalList) {
@@ -355,9 +456,9 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
             added++;
           }
         }
-        if (onlyDay != null) {
-          const theme = plan.days[0]?.theme;
-          if (theme) await tx`update pinpai.trips set guide = jsonb_set(coalesce(guide, '{}'::jsonb), '{themes}', coalesce(guide->'themes', '{}'::jsonb) || ${sql.json({ [onlyDay]: theme } as never)}) where id = ${id}`;
+        if (lo != null) {
+          const th = Object.fromEntries(plan.days.filter((d) => d.theme && inScope(d.day, sc)).map((d) => [d.day, d.theme]));
+          if (Object.keys(th).length) await tx`update pinpai.trips set guide = jsonb_set(coalesce(guide, '{}'::jsonb), '{themes}', coalesce(guide->'themes', '{}'::jsonb) || ${sql.json(th as never)}) where id = ${id}`;
           return;
         }
         const guide = { summary: plan.summary, getting_there: plan.getting_there, getting_around: plan.getting_around, tips: plan.tips,
@@ -382,17 +483,17 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
         }).catch((e) => console.error("retime after plan", d, e));
       }
       // nothing before landing / after take-off, closed-for-good places, double dinners, diet clashes
-      await tidyDays(id, days, onlyDay, t0 + 240_000).then((n) => n.length && console.log("tidy", n.join(" | "))).catch((e) => console.error("tidy", e));
+      await tidyDays(id, days, sc, t0 + 240_000).then((n) => n.length && console.log("tidy", n.join(" | "))).catch((e) => console.error("tidy", e));
       // real, known, still open? (Wikipedia / Wikidata) — closed-for-good sights leave the plan
       await verifyTripPlaces(id, Math.min(t0 + 225_000, Date.now() + 45_000)).then((v) => v.closed.length && console.log("closed", v.closed.join(" | "))).catch((e) => console.error("verify", e));
       // bags: drop at the hotel after landing, check-out + pick-up on the last day, moving between hotels
-      await addHotelTasks(id, days, onlyDay).catch((e) => console.error("hotel tasks", e));
+      await addHotelTasks(id, days, sc).catch((e) => console.error("hotel tasks", e));
       // running: real scenic routes near the hotel instead of the AI's guessed "running spot"
-      await addRunRoutes(id, days, onlyDay).catch((e) => console.error("run routes", e));
+      await addRunRoutes(id, days, sc).catch((e) => console.error("run routes", e));
       // activities the group asked for that are still missing → a real venue from the map
-      await ensureWants(id, days, onlyDay, t0 + 255_000).then((n) => n.length && console.log("wants", n.join(" | "))).catch((e) => console.error("wants", e));
+      await ensureWants(id, days, sc, t0 + 255_000).then((n) => n.length && console.log("wants", n.join(" | "))).catch((e) => console.error("wants", e));
       // meals the AI left empty → a real restaurant next to the stop before (OpenStreetMap), within the time budget
-      await fillMissingMeals(id, days, onlyDay, t0 + 275_000).catch((e) => console.error("meal fill", e));
+      await fillMissingMeals(id, days, sc, t0 + 275_000).catch((e) => console.error("meal fill", e));
       return { added, moved, days, removed };
     }
   });
