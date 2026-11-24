@@ -259,7 +259,18 @@ export async function addHotelTasks(tripId: string, nDays: number, onlyDay: Scop
     }
     const moveIn = d > 0 ? stays.find((s) => s.day_index === d) : null;
     if (moveIn && stays.some((s) => s.day_index < d) && !(d === nDays - 1 && last.category === "transport")) {
-      add.push({ sort: Number(first.sort_order) - 5, h: moveIn, dur: 45, name: `🧳 ย้ายโรงแรม → ${shortHotel(moveIn.name)}`,
+      const prevH = stayFor(d - 1);
+      const far = prevH && prevH.lat != null && moveIn.lat != null && kmBetween(prevH, moveIn) > 30;
+      // moving to another city (flight / train / boat): check out in the morning where people slept,
+      // check in after the arrival — not a 07:00 "drop bags" at a hotel 700 km away
+      const arrival = far ? stops.filter((r) => r.category === "transport" && r.lat != null && kmBetween(r, moveIn) < kmBetween(r, prevH)).shift() : undefined;
+      if (far) {
+        add.push({ sort: Number(first.sort_order) - 5, h: prevH, dur: 20, name: `🧳 เช็กเอาต์ ${shortHotel(prevH.name)}`,
+          why: `เช็กเอาต์ แล้วเดินทางไป${shortHotel(moveIn.name)}` });
+        const at = arrival ?? stops.find((r) => r.lat != null && kmBetween(r, moveIn) < 30);
+        add.push({ sort: at ? Number(at.sort_order) + 5 : Number(last.sort_order) + 5, h: moveIn, dur: 30, name: `🏨 เช็กอิน ${shortHotel(moveIn.name)}`,
+          why: "ถึงเมืองใหม่ เช็กอิน วางกระเป๋า แล้วค่อยออกเที่ยว" });
+      } else add.push({ sort: Number(first.sort_order) - 5, h: moveIn, dur: 45, name: `🧳 ย้ายโรงแรม → ${shortHotel(moveIn.name)}`,
         why: "เช็กเอาต์ที่เดิม เอากระเป๋าไปฝากที่โรงแรมใหม่ก่อนออกเที่ยว (เช็กอินได้ช่วงบ่าย)" });
     }
     if (d === nDays - 1 && d > 0 && last.category === "transport" && stops.length === 1) {
