@@ -13,6 +13,7 @@ import { avatarDataUrl } from "@/lib/client/avatar";
 import { SuggestSlot, toMin, toHHMM, type PickFn, type SuggestKind } from "./Suggest";
 import { TravelLines, transferMin } from "./TravelPanel";
 import { mapAppAt, rideGuide } from "@/lib/transport";
+import { routeUrl } from "@/lib/maplinks";
 
 /** "外滩 (The Bund)" → "The Bund"; "วัดพระสิงห์ (Wat Phra Singh)" → "วัดพระสิงห์" */
 export function shortName(name: string) {
@@ -93,7 +94,7 @@ function LegRow({ leg, color, from, to }: { leg: Leg | undefined; color: string;
               <span className="truncate">{leg.label} · {fmtKm(leg.km)}</span>
               {from && to && <span className="shrink-0 text-accent">{open ? "ซ่อน" : "วิธีไป"}</span>}
             </button>
-            <a href={leg.url} target="_blank" rel="noreferrer" className="-my-1.5 ml-auto inline-flex h-9 shrink-0 items-center rounded-full px-3 font-medium text-accent hover:bg-accent-tint">นำทาง</a>
+            <a href={from?.lat != null && to?.lat != null ? routeUrl({ lat: from.lat, lng: from.lng!, name: from.name }, { lat: to.lat, lng: to.lng!, name: to.name }, leg.mode) : leg.url} target="_blank" rel="noreferrer" className="-my-1.5 ml-auto inline-flex h-9 shrink-0 items-center rounded-full px-3 font-medium text-accent hover:bg-accent-tint">นำทาง</a>
           </span>
         )}
       </div>
