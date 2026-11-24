@@ -82,7 +82,7 @@ export function pickEatery(list: Eatery[], o: { near: { lat: number; lng: number
   const SPICY = /sichuan|szechuan|hunan|chongqing|hot ?pot|mala|spicy|火锅|川|湘/i;
   // halal / vegetarian groups: only places mapped as such (never a guess)
   const KONBINI = /^(convenience|supermarket|fuel|vending_machine)$|familymart|family mart|7-eleven|seven-eleven|lawson|ministop|cu\b|gs25|ファミリーマート|セブン|ローソン/i;
-  const scored = list.filter((e) => !KONBINI.test(e.kind) && !KONBINI.test(e.name) && !o.used.has(norm(e.name)) && openAt(e.hours, o.at) && (o.spicyOk || !SPICY.test(`${e.name} ${e.cuisine ?? ""}`))
+  const scored = list.filter((e) => !KONBINI.test(e.kind) && !KONBINI.test(e.name) && !o.used.has(norm(e.name)) && !o.used.has(norm(e.name.split(/[(（]/)[0])) && openAt(e.hours, o.at) && (o.spicyOk || !SPICY.test(`${e.name} ${e.cuisine ?? ""}`))
       && (!o.food.includes("halal") || e.halal) && (!o.food.includes("veg") || e.veg))
     .map((e) => {
       let s = -dist(o.near, e) * 2;                                   // closer is better (km)
@@ -90,6 +90,8 @@ export function pickEatery(list: Eatery[], o: { near: { lat: number; lng: number
       if (e.cuisine) s += 0.6;                                        // mapped well = usually established
       if (e.hours) s += 0.4;
       if (o.food.includes("thai") && /thai/i.test(e.cuisine ?? "")) s += 1.5;
+      // asked for local food: an Indian / Italian / burger place is a last resort, not dinner in Hangzhou
+      if (o.food.includes("local") && !o.food.includes("veg") && !o.food.includes("halal") && /indian|italian|pizza|burger|american|mexican|kebab|western|steak/i.test(`${e.cuisine ?? ""} ${e.name}`)) s -= 2.5;
       if (o.meal === "breakfast" && /breakfast|brunch|coffee|bakery|cafe/i.test(`${e.cuisine} ${e.kind} ${e.name}`)) s += 1;
       if (o.meal !== "breakfast" && /coffee_shop|ice_cream|bubble|donut|dessert/i.test(e.cuisine ?? "")) s -= 1.5;
       return { e, s };

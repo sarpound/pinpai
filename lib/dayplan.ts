@@ -129,7 +129,7 @@ export async function tidyDays(tripId: string, nDays: number, onlyDay: Scope, de
     // a road is not a café ("湖滨路 (Hubin Road)" as afternoon coffee)
     for (const r of [...rows]) if ((r.category === "food" || r.category === "cafe") && isAi(r) && /^[^()（]*?(路|大道|大街)\s*(\(|$)|^[^()]*\b(Road|Street|Avenue)\)?\s*$/i.test(r.name.trim()) && !/餐|饭|馆|店|楼|坊|cafe|coffee|restaurant|kitchen/i.test(r.name)) { await drop(r, false); changed = true; }
     // "hotel" / "breakfast" as a restaurant name is a placeholder, not a place
-    for (const r of [...rows]) if ((r.category === "food" || r.category === "cafe") && isAi(r) && (/^(the )?(hotel|hotel breakfast|breakfast|อาหารเช้า(ที่)?โรงแรม|โรงแรม|ที่พัก)$/i.test(r.name.trim()) || /^(familymart|family mart|7-eleven|seven-eleven|lawson|ministop|gs25|cu)\b|ファミリーマート|セブン-?イレブン|ローソン/i.test(r.name.trim()))) { await drop(r, false); changed = true; }
+    for (const r of [...rows]) if ((r.category === "food" || r.category === "cafe") && isAi(r) && (/^(the )?(hotel|hotel breakfast|breakfast|อาหารเช้า(ที่)?โรงแรม|โรงแรม|ที่พัก)$/i.test(r.name.trim()) || /^(a )?local (eatery|restaurant|food|diner|noodle shop|cafe)\b|\b(eatery|restaurant|food stall|cafe) (near|in|at) /i.test(r.name.replace(/^.*\(([^()]*[A-Za-z][^()]*)\)\s*$/, "$1").trim()) || /^(familymart|family mart|7-eleven|seven-eleven|lawson|ministop|gs25|cu)\b|ファミリーマート|セブン-?イレブン|ローソン/i.test(r.name.trim()))) { await drop(r, false); changed = true; }
     // breakfast at a dinner place (Peking duck at 07:55) or at a pin we could only guess: let the meal fill find a real morning café
     const DINNERY = /全聚德|quanjude|peking duck|烤鸭|hot ?pot|火锅|bbq|barbecue|烧烤|yakiniku|焼肉|steak|izakaya|居酒屋|\bpub\b|\bbar\b|buffet|ดินเนอร์|dinner/i;
     for (const r of [...rows]) {
@@ -388,6 +388,27 @@ export async function addHotelTasks(tripId: string, nDays: number, onlyDay: Scop
           details = details || ${sql.json({ why: "เช็กเอาต์ แล้วเดินทางไปสนามบิน" } as never)} where id = ${day[co].id} and trip_id = ${tripId}`;
         await retimeStored(sql, tripId, d, { keepGaps: false });
       }
+      // a plain check-out right before the airport: leave early enough to make it (not 08:30 at a hotel 30 km from an 08:30 check-in)
+      const dd2 = await loadDay(sql, tripId, d);
+      const ci = dd2.findIndex((r) => r.details?.kind === HOTEL_TASK && /^🧳 เช็กเอาต์ (?!ฝาก)/.test(r.name));
+      const dp = [...dd2].reverse().find((r) => r.category === "transport");
+      const tc = hm2(dd2[ci]?.start_time ?? null), td = hm2(dp?.start_time ?? null);
+      if (ci >= 0 && dp && tc != null && td != null && dd2.indexOf(dp) > ci && !dd2.slice(ci + 1, dd2.indexOf(dp)).some((r) => r.category !== "stay")) {
+        const { travelMin } = await import("./retime");
+        const [tt] = await sql`select prefs from pinpai.trips where id = ${tripId}`;
+        const latest = td - travelMin(dd2[ci], dp, tt?.prefs?.mode ?? null, tt?.prefs?.calib ?? null) - (dd2[ci].duration_min ?? 20) - 10;
+        if (tc > latest && latest > 4 * 60) {
+          await sql`update pinpai.places set start_time = ${`${String(Math.floor(latest / 60)).padStart(2, "0")}:${String(latest % 60).padStart(2, "0")}`}
+            where id = ${dd2[ci].id} and trip_id = ${tripId}`;
+          // a filled-in breakfast that no longer fits before leaving goes (grab something at the airport)
+          for (const r of dd2.slice(0, ci)) {
+            const t1 = hm2(r.start_time);
+            if (r.details?.kind === "meal_fill" && t1 != null && t1 + (r.duration_min ?? 45) > latest) await sql`delete from pinpai.places where id = ${r.id} and trip_id = ${tripId}`;
+          }
+          await sql`update pinpai.places set details = details || ${sql.json({ fixed_time: true } as never)} where id = ${dd2[ci].id} and trip_id = ${tripId}`;
+          await retimeStored(sql, tripId, d, { keepGaps: true });
+        }
+      }
     }
     touched.push(d);
   }
@@ -485,7 +506,7 @@ export async function fillMissingMeals(tripId: string, nDays: number, onlyDay: S
   const { eateriesNear, pickEatery } = await import("./eats");
   const all = await sql`select name from pinpai.places where trip_id = ${tripId} and category in ('food','cafe')`;
   const norm = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
-  const used = new Set(all.flatMap((r) => [norm(r.name), ...(/\(([^()]+)\)\s*$/.exec(r.name) ? [norm(/\(([^()]+)\)\s*$/.exec(r.name)![1])] : [])]));
+  const used = new Set(all.flatMap((r) => [norm(r.name), norm(r.name.split(/[(（]/)[0]), ...(/\(([^()]+)\)\s*$/.exec(r.name) ? [norm(/\(([^()]+)\)\s*$/.exec(r.name)![1])] : [])].filter((k) => k.length >= 2)));
   const WIN: Record<string, [number, number, number]> = { breakfast: [420, 600, 480], lunch: [660, 870, 750], dinner: [1050, 1260, 1140] }; // [from, to, ideal]
   const hotelOn = await hotels(tripId);
   let filled = 0;
@@ -533,7 +554,7 @@ export async function fillMissingMeals(tripId: string, nDays: number, onlyDay: S
         if (e) break;
       }
       if (!e) continue;
-      used.add(norm(e.name));
+      used.add(norm(e.name)); used.add(norm(e.name.split(/[(（]/)[0]));
       const after = timed.filter((x) => x.t <= at).pop()?.r;
       const sort = after ? Number(after.sort_order) + 5 : (Number(rows[0]?.sort_order ?? 10) - 5);
       const ideal2 = at % (24 * 60);
