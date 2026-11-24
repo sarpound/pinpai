@@ -521,7 +521,8 @@ export async function fillMissingMeals(tripId: string, nDays: number, onlyDay: S
     const dep = d === nDays - 1 && nDays > 1 ? ([...timed].reverse().find((x) => x.r.category === "transport" && AIRPORT.test(x.r.name))
       ?? (t?.prefs?.depart_time ? [...timed].reverse().find((x) => x.r.category === "transport") : undefined)) : undefined;
     const open = arr ? arr.t + (arr.r.duration_min ?? 60) + 60 : first;      // landed + immigration/transfer
-    const close = dep ? dep.t - 45 : 26 * 60;                                // must be done before heading to the airport
+    const out = dep ? timed.find((x) => x.r.details?.kind === HOTEL_TASK && /^🧳 เช็กเอาต์ (?!ฝาก)/.test(x.r.name)) : undefined;
+    const close = dep ? Math.min(dep.t - 45, out ? out.t + 15 : 26 * 60) : 26 * 60; // done before heading to the airport (or before a check-out right before it)
     let added = false;
     for (const meal of ["breakfast", "lunch", "dinner"]) {
       if (!meals.includes(meal) || Date.now() > deadline) continue;
