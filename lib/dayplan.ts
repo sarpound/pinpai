@@ -422,8 +422,12 @@ export async function fillMissingMeals(tripId: string, nDays: number, onlyDay: S
       const at = Math.min(Math.max(ideal, open), close - 60, b - 30);
       const endsEarly = !dep && last < a + 30;                                 // day over before the meal: eat near where people sleep
       const before = timed.filter((x) => x.t <= at && x.r.lat != null).pop() ?? timed.find((x) => x.r.lat != null);
-      // breakfast near where people slept; an early-ending day's dinner near where they sleep tonight
-      const home = meal === "breakfast" ? hotelOn(d - 1) : hotelOn(d);
+      // breakfast near where people slept; an early-ending day's dinner near where they sleep tonight —
+      // unless that hotel is in another town than the day (a transfer day, a wrong hotel pin): then next to the day itself
+      const h0 = meal === "breakfast" ? hotelOn(d - 1) : hotelOn(d);
+      const pts = timed.filter((x) => x.r.lat != null && x.r.category !== "transport");
+      const mid = pts.length ? { lat: [...pts].sort((p, q) => p.r.lat! - q.r.lat!)[Math.floor(pts.length / 2)].r.lat!, lng: [...pts].sort((p, q) => p.r.lng! - q.r.lng!)[Math.floor(pts.length / 2)].r.lng! } : null;
+      const home = h0 && (!mid || kmBetween(h0, mid) <= 25) ? h0 : null;
       const near = (meal === "breakfast" || endsEarly) && home ? home : before ? { lat: before.r.lat!, lng: before.r.lng! } : null;
       if (!near) continue;
       const list = await eateriesNear(near, meal === "breakfast" ? "cafe" : "restaurant", food.includes("halal") ? "halal" : food.includes("veg") ? "veg" : null).catch(() => []);
@@ -505,7 +509,9 @@ export async function ensureWants(tripId: string, nDays: number, onlyDay: Scope,
       at = spec.at === "sunset" ? hm(sun.set) - 30 : hm(sun.rise) - 20;
     } else at = spec.at;
     const before = rows.filter((r) => (hm2(r.start_time) ?? -1) <= at && r.lat != null).pop() ?? rows.find((r) => r.lat != null);
-    const near = spec.near === "hotel" && home ? home : before ? { lat: before.lat!, lng: before.lng! } : home;
+    const dayPts = rows.filter((r) => r.lat != null && r.category !== "transport");
+    const homeOk = home && (!dayPts.length || dayPts.some((r) => kmBetween(r, home) <= 25));
+    const near = spec.near === "hotel" && homeOk ? home : before ? { lat: before.lat!, lng: before.lng! } : homeOk ? home : null;
     if (!near) continue;
     const list = (await placesNear(near, spec.q).catch(() => [])).filter((e) => !(w === "massage" && /school|academy|โรงเรียน/i.test(e.name)));
     const e = list[0];

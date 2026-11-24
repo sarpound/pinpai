@@ -190,10 +190,20 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
       const o = await planOutline({ destination: trip.destination, days, startDate: trip.start_date, ...prefs, budgetTHB,
         existing: existing.map((e) => ({ name: e.name, day: e.day_index })) }, meter);
       const anchor = trip.lat != null ? { lat: trip.lat, lng: trip.lng } : null;
+      // a country-wide trip ("Thailand", "Japan") has a centroid nobody visits: find each base city first, then its hotel near it
+      const baseNames = [...new Set(o.days.map((d) => d.base))].slice(0, 15);
+      const basePt = new Map<string, { lat: number; lng: number }>();
+      await mapLimit(baseNames, 3, async (b) => {
+        const hit = await resolvePlace(b, null, anchor, 3000, { anchor, areaKm: 3000 }).catch(() => null);
+        if (hit) basePt.set(b, { lat: hit.lat, lng: hit.lng });
+      });
       const stays = await mapLimit(o.stays, 4, async (st) => {
-        const guess = st.lat != null && st.lng != null ? { lat: st.lat, lng: st.lng } : null;
-        const loc = await resolvePlace(st.name_local ?? st.name, null, guess ?? anchor, guess ? 12 : 120, { anchor, alt: st.name_local ? st.name : null, category: "stay" }).catch(() => null);
-        return { st, loc: loc ?? (guess ? { ...guess, address: "", approx: true } : null) };
+        const base = o.days.find((d) => d.day === Math.round(st.check_in_day))?.base;
+        const city = (base ? basePt.get(base) : undefined) ?? anchor;
+        const g = st.lat != null && st.lng != null ? { lat: st.lat, lng: st.lng } : null;
+        const guess = g && (!city || distKm(g, city) <= 40) ? g : null;     // the model's pin only if it is in that city
+        const loc = await resolvePlace(st.name_local ?? st.name, null, guess ?? city, 25, { anchor: city, areaKm: 40, alt: st.name_local ? st.name : null, category: "stay" }).catch(() => null);
+        return { st, loc: loc ?? (guess ?? city ? { ...(guess ?? city)!, address: "", approx: true } : null) };
       });
       await sql.begin(async (tx) => {
         await tx`delete from pinpai.places p where p.trip_id = ${id} and p.source = 'ai' and coalesce(p.details->>'planned', '') = 'true'
@@ -211,7 +221,8 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
         }
         const guide = { summary: o.summary, getting_there: o.getting_there, getting_around: o.getting_around, tips: o.tips,
           prep: (o.prep ?? []).map((t) => String(t).replace(/[:：]?\s*\+?\d[\d\s().-]{7,}\d/g, " (เช็กเบอร์ล่าสุดจากเว็บทางการ)").trim().slice(0, 200)).filter(Boolean).slice(0, 10),
-          themes: Object.fromEntries(o.days.map((d) => [d.day, d.theme])), outline: o.days.map((d) => ({ day: d.day, base: d.base, area: d.area })),
+          themes: Object.fromEntries(o.days.map((d) => [d.day, d.theme])),
+          outline: o.days.map((d) => ({ day: d.day, base: d.base, area: d.area, ...(basePt.get(d.base) ?? {}) })),
           generated_at: new Date().toISOString(),
           costs: o.costs ? Object.fromEntries(Object.entries(o.costs).map(([k, v]) => [k, typeof v === "number" ? Math.max(0, Math.round(v)) : v])) : undefined };
         await tx`update pinpai.trips set guide = ${sql.json(guide as never)} where id = ${id}`;
@@ -231,7 +242,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
       const stayOn = (d: number) => stayRows.filter((e) => (e.day_index ?? 0) <= d).pop() ?? stayRows[0];
       const hotel = lo == null ? null : stayOn(lo);
       const dayDate = lo != null ? new Date(Date.parse(trip.start_date) + lo * 864e5).toISOString().slice(0, 10) : trip.start_date;
-      const outline: { day: number; base: string; area: string }[] = (await sql`select guide->'outline' as o from pinpai.trips where id = ${id}`)[0]?.o ?? [];
+      const outline: { day: number; base: string; area: string; lat?: number; lng?: number }[] = (await sql`select guide->'outline' as o from pinpai.trips where id = ${id}`)[0]?.o ?? [];
       const themes: Record<string, string> = (await sql`select guide->'themes' as t from pinpai.trips where id = ${id}`)[0]?.t ?? {};
       const others = (await sql`select name from pinpai.places where trip_id = ${id} and day_index is not null and category <> 'stay'
         and coalesce(details->>'kind', '') not in ('hotel_task', 'run', 'meal_fill') and not (day_index between ${lo ?? -1} and ${hi ?? -1})`).map((e) => e.name as string);
@@ -247,7 +258,10 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
             return { day: d, base: o?.base ?? trip.destination, area: o?.area ?? trip.destination, theme: themes[d] ?? "", hotel: stayOn(d)?.name ?? null }; }) } } : {}),
       }, meter);
 
-      const anchor = trip.lat != null ? { lat: trip.lat, lng: trip.lng } : null;
+      const tripAnchor = trip.lat != null ? { lat: trip.lat, lng: trip.lng } : null;
+      // where a day happens: its base city (long trips) or the destination — map searches are biased to it
+      const dayAnchor = (d: number) => { const o = outline.find((x) => x.day === d); return o?.lat != null && o?.lng != null ? { lat: o.lat, lng: o.lng } : tripAnchor; };
+      const anchor = lo != null ? dayAnchor(lo) : tripAnchor;
       // a day / block: only re-use places from those days or the wishlist, never steal a stop from another day
       const byName = new Map(existing.filter((e) => sc == null || e.day_index == null || inScope(e.day_index, sc)).map((e) => [norm(e.name), e]));
       type Item = { name: string; name_local: string | null; category: string; lat: number | null; lng: number | null; why: string;
@@ -272,7 +286,8 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
         const guess = it.lat != null && it.lng != null ? { lat: it.lat, lng: it.lng } : null;
         // out of time: keep the AI's point (the pin self-heals when the trip is opened)
         if (Date.now() - t0 > 250_000) return { it, label, existingId: null, loc: guess ? { ...guess, address: "", approx: true } : null, pt: guess };
-        const opt = { anchor, alt: it.name_local ? it.name : null, category: it.category };
+        const anc = dayAnchor(it.day);
+        const opt = { anchor: anc, alt: it.name_local ? it.name : null, category: it.category };
         if (near) {
           // a restaurant is looked up around the stop it sits next to: nearest branch of a chain, never a cross-town lunch
           const hit = await resolvePlace(it.name_local ?? it.name, null, near, 4, { ...opt, nearest: true });
@@ -281,7 +296,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
           // this restaurant is simply not around here → replaced below by one that is
           return { it, label, existingId: null, loc: null, pt: null, misfit: near };
         }
-        const loc = await resolvePlace(it.name_local ?? it.name, null, guess ?? anchor, guess ? 12 : 80, opt);
+        const loc = await resolvePlace(it.name_local ?? it.name, null, guess ?? anc, guess ? 12 : 80, opt);
         return { it, label, existingId: null, loc, pt: loc ? { lat: loc.lat, lng: loc.lng } : null };
       };
       const first = await mapLimit(items.filter((it) => !eats(it)), 6, (it) => lookup(it, null));
