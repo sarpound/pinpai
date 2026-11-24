@@ -456,7 +456,7 @@ export default function TripApp({ tripId, importUrl, openPlan }: { tripId: strin
     // background planner finished (for whoever pressed it, and for the friends watching)
     const job = data.trip.plan_job;
     const was = prevJob.current;
-    if (was && was.state === "running" && job && job.started_at === was.started_at && job.state !== "running") {
+    if (was && was.state === "running" && job && (job.started_at === was.started_at || (job.chunked && was.chunked)) && job.state !== "running") {
       if (job.state === "done") {
         const one = job.only_day;
         toastMsg(one != null ? `จัดวันที่ ${one + 1} ใหม่แล้ว 🎉 (${(job.added ?? 0) + (job.moved ?? 0)} ที่)` : `จัดทริป ${job.days ?? ""} วันเสร็จแล้ว 🎉 (${(job.added ?? 0) + (job.moved ?? 0)} ที่) ปรับต่อได้ตามใจ`);
@@ -478,6 +478,14 @@ export default function TripApp({ tripId, importUrl, openPlan }: { tripId: strin
   ], [data?.pings, bursts]);
   const rally = data?.trip.prefs?.rally ?? null;
   const planJob = data?.trip.plan_job;
+  // a long trip is planned a few days per request; when the server could not start the next block itself, any open app does
+  const contSent = useRef<string | null>(null);
+  useEffect(() => {
+    const j = data?.trip.plan_job;
+    if (!session || !j || j.state !== "running" || !j.chunked || !j.waiting || !j.nonce || contSent.current === j.nonce) return;
+    contSent.current = j.nonce;
+    api(`/api/trips/${tripId}/plan`, { token: session.token, body: { continue: j.nonce } }).catch(() => {});
+  }, [data?.trip.plan_job, session, tripId]);
   const planning = planJob?.state === "running" && Date.now() - Date.parse(planJob.started_at) < 6 * 60_000;
   planningRef.current = !!planning;
 

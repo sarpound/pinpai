@@ -1,5 +1,5 @@
 export type Trip = { id: string; title: string; destination: string | null; dest_lat: number | null; dest_lng: number | null; start_date: string | null; end_date: string | null; cover_emoji: string; invite_code: string; version: number; prefs: Prefs; guide: Guide; plan_job?: PlanJob | null };
-export type PlanJob = { state: "running" | "done" | "error"; by?: string; started_at: string; finished_at?: string; days?: number; only_day?: number; added?: number; moved?: number; message?: string | null; chunked?: boolean; done_days?: number };
+export type PlanJob = { state: "running" | "done" | "error"; by?: string; started_at: string; finished_at?: string; days?: number; only_day?: number; added?: number; moved?: number; message?: string | null; chunked?: boolean; done_days?: number; waiting?: boolean; nonce?: string };
 export type Rally = { lat: number; lng: number; name: string; by?: string; at?: string };
 export type Prefs = { styles?: string[]; pace?: string; budget?: string; mode?: "transit" | "taxi" | "drive" | "walk"; travelers?: number; note?: string | null;
   arrive_time?: string | null; depart_time?: string | null; wants?: string[]; companions?: string; meals?: string[]; food?: string[]; must?: string | null;

@@ -35,7 +35,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
     let job0: Record<string, unknown> | null = null;
     if (cont) {
       const fresh = randomUUID();
-      const [claimed] = await sql`update pinpai.trips set plan_job = plan_job || ${sql.json({ nonce: fresh, started_at: new Date().toISOString() } as never)}
+      const [claimed] = await sql`update pinpai.trips set plan_job = plan_job || ${sql.json({ nonce: fresh, started_at: new Date().toISOString(), waiting: false } as never)}
         where id = ${id} and plan_job->>'state' = 'running' and plan_job->>'nonce' = ${cont} returning plan_job`;
       if (!claimed) throw new HttpError(409, "stale continuation");
       job0 = claimed.plan_job;
@@ -96,9 +96,9 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
     for (let d = 0; d < days; d += CHUNK) chunks.push([d, Math.min(days - 1, d + CHUNK - 1)]);
     // one planner at a time per trip; a job older than 6 min is considered dead (function timed out)
     type Job = { state: string; by: string; by_id: string; started_at: string; days: number; only_day?: number; chunked?: boolean; chunks?: [number, number][];
-      next?: number; nonce?: string; outlined?: boolean; done_days?: number; added?: number; moved?: number; removed?: number; message?: string };
+      next?: number; nonce?: string; outlined?: boolean; waiting?: boolean; retries?: number; done_days?: number; added?: number; moved?: number; removed?: number; message?: string };
     let job: Job;
-    if (cont) job = { ...(job0 as Job) };
+    if (cont) job = { ...(job0 as Job), waiting: false };
     else {
       job = { state: "running", by: me.name, by_id: me.id, started_at: new Date().toISOString(), days, ...(onlyDay != null ? { only_day: onlyDay } : {}),
         ...(chunked ? { chunked: true, chunks, next: 0, nonce: randomUUID(), done_days: 0, added: 0, moved: 0, removed: 0 } : {}) };
@@ -116,21 +116,27 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
     after(async () => {
       // never leave the trip stuck on "running": if the platform is about to stop us, say so first
       const watchdog = setTimeout(() => {
-        sql`update pinpai.trips set plan_job = ${sql.json({ ...job, state: "error", finished_at: new Date().toISOString(), message: "ใช้เวลานานเกินไป ลองลดจำนวนวันหรือกดจัดใหม่อีกครั้ง" } as never)}
+        // a block of a long trip that ran out of time is offered again (an open app picks it up); anything else is reported
+        const retry = job.chunked && (job.retries ?? 0) < 2;
+        const nxt = retry ? { ...job, retries: (job.retries ?? 0) + 1, nonce: randomUUID(), waiting: true, started_at: new Date().toISOString() }
+          : { ...job, state: "error", finished_at: new Date().toISOString(), message: "ใช้เวลานานเกินไป ลองลดจำนวนวันหรือกดจัดใหม่อีกครั้ง" };
+        sql`update pinpai.trips set plan_job = ${sql.json(nxt as never)}
           where id = ${id} and plan_job->>'started_at' = ${job.started_at} and plan_job->>'state' = 'running'`.then(() => bumpVersion(id)).catch(() => {});
       }, 285_000);
       try {
         if (job.chunked) {
           const t0 = Date.now();
           // hand over to a fresh request (own 300 s budget); the key changes so each step runs exactly once
+          // the platform stops a request chain after a few hops (508 loop detected): then the next block waits for any open app
+          // of the group to start it (the trip screen does that by itself), so nothing is lost
           const handOver = async (patch: Partial<Job>) => {
             const nonce = randomUUID();
-            const next = { ...job, ...patch, nonce, started_at: new Date().toISOString() };
+            const next = { ...job, ...patch, nonce, waiting: true, started_at: new Date().toISOString() };
             await sql`update pinpai.trips set plan_job = ${sql.json(next as never)} where id = ${id} and plan_job->>'nonce' = ${job.nonce!}`;
             clearTimeout(watchdog);
             await bumpVersion(id).catch(() => {});
             const res = await fetch(new URL(`/api/trips/${id}/plan`, req.url), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ continue: nonce }) }).catch((e) => e as Error);
-            if (res instanceof Error || !res.ok) throw new Error(`continue failed: ${res instanceof Error ? res.message : res.status}`);
+            if (res instanceof Error || !res.ok) console.warn(`[plan] self-continue ${res instanceof Error ? res.message : res.status} — waiting for an open app`);
           };
           if (!job.outlined) {
             await runOutline();
@@ -142,7 +148,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
           const r = await runPlan([from, to], t0);
           const acc = { added: (job.added ?? 0) + r.added, moved: (job.moved ?? 0) + r.moved, removed: (job.removed ?? 0) + r.removed, done_days: to + 1 };
           if (k + 1 < job.chunks!.length) {
-            await handOver({ ...acc, next: k + 1, message: `จัดแล้ว ${to + 1}/${days} วัน` });
+            await handOver({ ...acc, next: k + 1, retries: 0, message: `จัดแล้ว ${to + 1}/${days} วัน` });
             return;
           }
           // last block: activities still missing anywhere in the trip
@@ -156,7 +162,18 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
         }
       } catch (e) {
         console.error("[plan] failed", e);
-        const msg = /AI|Gateway|rate|model/i.test(String(e)) ? "ระบบ AI ไม่ว่างชั่วคราว ลองกดจัดใหม่อีกครั้ง" : "จัดทริปไม่สำเร็จ ลองใหม่อีกครั้ง";
+        // a block of a long trip that hit a busy AI: try the same block again in a moment (twice), the days already done stay
+        if (job.chunked && (job.retries ?? 0) < 2) {
+          clearTimeout(watchdog);
+          await new Promise((r) => setTimeout(r, 30_000));
+          const nonce = randomUUID();
+          await sql`update pinpai.trips set plan_job = ${sql.json({ ...job, retries: (job.retries ?? 0) + 1, nonce, waiting: true, started_at: new Date().toISOString() } as never)}
+            where id = ${id} and plan_job->>'nonce' = ${job.nonce!}`.catch(() => {});
+          await bumpVersion(id).catch(() => {});
+          await fetch(new URL(`/api/trips/${id}/plan`, req.url), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ continue: nonce }) }).catch(() => {});
+          return;
+        }
+        const msg = /\bAI\b|Gateway|rate.?limit|429|model/.test(String(e)) ? "ระบบ AI ไม่ว่างชั่วคราว ลองกดจัดใหม่อีกครั้ง" : "จัดทริปไม่สำเร็จ ลองใหม่อีกครั้ง";
         await sql`update pinpai.trips set plan_job = ${sql.json({ ...job, state: "error", finished_at: new Date().toISOString(), message: msg } as never)} where id = ${id}`.catch(() => {});
       }
       clearTimeout(watchdog);
