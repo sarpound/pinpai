@@ -1,0 +1,24 @@
+export type Trip = { id: string; title: string; destination: string | null; dest_lat: number | null; dest_lng: number | null; start_date: string | null; end_date: string | null; cover_emoji: string; invite_code: string; version: number; prefs: Prefs; guide: Guide; plan_job?: PlanJob | null };
+export type PlanJob = { state: "running" | "done" | "error"; by?: string; started_at: string; finished_at?: string; days?: number; only_day?: number; added?: number; moved?: number; message?: string };
+export type Rally = { lat: number; lng: number; name: string; by?: string; at?: string };
+export type Prefs = { styles?: string[]; pace?: string; budget?: string; mode?: "transit" | "taxi" | "drive" | "walk"; travelers?: number; note?: string | null;
+  arrive_time?: string | null; depart_time?: string | null; wants?: string[]; companions?: string; meals?: string[]; food?: string[]; must?: string | null;
+  budget_amount?: number | null; budget_per?: "person" | "group"; rally?: Rally | null };
+export type Costs = { stay_per_night: number; food_per_day: number; local_transport_per_day: number; tickets_total: number; flights: number; note: string };
+export type Guide = { summary?: string; getting_there?: string; getting_around?: string; tips?: string[]; themes?: Record<string, string>; generated_at?: string; costs?: Costs; prep?: string[] };
+export type TravelLeg = { time: string | null; flight: string | null; place: string | null };
+export type Travel = { arrive: TravelLeg | null; depart: TravelLeg | null };
+export type MemberT = { id: string; name: string; color: string; role: "owner" | "editor"; share_location: boolean; share_until: string | null; last_seen: string; travel?: Travel | null };
+export type Details = { summary?: string; highlights?: string[]; tips?: string[]; best_time?: string | null; duration_min?: number | null; price?: string | null; hours?: string | null; getting_there?: string | null; must_try?: string[] | null; why?: string; ai?: boolean; photo?: { url: string; page: string; title: string }; photo_checked?: boolean; nights?: number; approx?: boolean; planned?: boolean; fixed_time?: boolean; user_dur?: boolean; user_edited?: string };
+export type Place = { id: string; name: string; category: string; lat: number | null; lng: number | null; address: string | null; day_index: number | null; sort_order: number; start_time: string | null; duration_min: number | null; notes: string | null; details: Details; source: string; source_url: string | null; visited: boolean; added_by: string | null; votes: string[] };
+export type Loc = { member_id: string; lat: number; lng: number; accuracy: number | null; updated_at: string;
+  speed: number | null; heading: number | null; mode: string | null; manual: boolean; trail: { lat: number; lng: number; t: number }[] };
+export type Ping = { id: number; from_member: string; to_member: string | null; emoji: string; created_at: string };
+export type Expense = { id: string; paid_by: string | null; amount: number; category: string; note: string | null; split: string[]; created_by: string | null; spent_on: string | null; created_at: string };
+export type Activity = { id: number; member_id: string | null; text: string; created_at: string };
+export type TripState = { trip: Trip; members: MemberT[]; places: Place[]; locations: Loc[]; activity: Activity[]; pings: Ping[]; expenses: Expense[]; me: string; stamp: string; live?: string; chat?: { last: number; locreq: { id: number; member_id: string | null; created_at: string } | null } };
+export type Candidate = { name: string; category: string; why: string; lat: number | null; lng: number | null; address: string | null; approx: boolean; city?: string | null; confidence?: number; photo?: { url: string; page: string; title: string } | null; duplicate?: boolean; far_km?: number };
+export type Leg = { km: number; min: number; mode: "walk" | "car" | "transit"; label: string; url: string };
+export type DayRoute = { legs: Leg[]; geometry: [number, number][]; exact: boolean; mode: string; hotel: { id: string; name: string } | null; hotelStart?: boolean; hotelEnd?: boolean; stopIds: string[] };
+
+export type ChatMsg = { id: number; member_id: string | null; kind: "text" | "loc" | "place" | "locreq"; body: string | null; place_id: string | null; to_member: string | null; lat: number | null; lng: number | null; created_at: string };
