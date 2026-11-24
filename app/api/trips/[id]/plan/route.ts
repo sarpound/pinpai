@@ -1,6 +1,6 @@
 import { NextResponse, after } from "next/server";
 import { sql, bumpVersion, logActivity } from "@/lib/db";
-import { handle, requireMember, readJson, str, num, HttpError } from "@/lib/auth";
+import { handle, requireMember, readJson, str, num, assertUuid, HttpError } from "@/lib/auth";
 import { planTrip, planOutline, settleDay, mealsNear, stopRules } from "@/lib/ai";
 import { randomUUID } from "crypto";
 import { notify } from "@/lib/push";
@@ -28,6 +28,7 @@ const LONG = 7, CHUNK = 4, MAX_DAYS = 45;
 export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan">) {
   return handle(async () => {
     const { id } = await ctx.params;
+    assertUuid(id);
     const body = await readJson(req);
     // long trips continue themselves: the previous block hands over with a one-time key (no user session in that request)
     const cont = typeof body.continue === "string" ? body.continue : null;

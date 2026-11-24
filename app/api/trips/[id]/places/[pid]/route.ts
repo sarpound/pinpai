@@ -21,6 +21,7 @@ export async function PATCH(req: Request, ctx: RouteContext<"/api/trips/[id]/pla
     if (has("day_index")) {
       const d = num(b.day_index);
       day = d != null && d >= 0 && d <= 60 ? Math.floor(d) : null;
+      if (day != null) { const [t] = await sql`select (end_date - start_date + 1)::int as n from pinpai.trips where id = ${id}`; if (t?.n != null && day >= t.n) throw new HttpError(400, "วันนี้อยู่นอกช่วงทริป"); }
     }
     let sort = cur.sort_order as number;
     let order: string[] | null = null;

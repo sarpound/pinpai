@@ -22,6 +22,10 @@ export async function insertPlace(tripId: string, memberId: string, p: Record<st
   if (!name) return null;
   const day = num(p.day_index);
   let dayIndex = day != null && day >= 0 && day <= 60 ? Math.floor(day) : null;
+  if (dayIndex != null) {   // a day past the trip's last day would be invisible: keep it in "รอจัด" instead
+    const [t] = await sql`select (end_date - start_date + 1)::int as n from pinpai.trips where id = ${tripId}`;
+    if (t?.n != null && dayIndex >= t.n) dayIndex = null;
+  }
   // insert right after another stop (gap filler, "near here", clip → nearest day)
   const afterId = typeof p.after_id === "string" && UUID.test(p.after_id) ? p.after_id : null;
   const [after] = afterId ? await sql`select day_index, sort_order from pinpai.places where id = ${afterId} and trip_id = ${tripId}` : [];
@@ -43,7 +47,9 @@ export async function insertPlace(tripId: string, memberId: string, p: Record<st
   const photo = ph && typeof ph.url === "string" && ph.url.startsWith("https://upload.wikimedia.org/") && typeof ph.page === "string" && /^https:\/\/[a-z]+\.wikipedia\.org\//.test(ph.page)
     ? { url: ph.url.slice(0, 500), page: ph.page.slice(0, 300), title: String(ph.title ?? "").slice(0, 160) } : null;
   const details = { ...(why ? { why } : {}), ...(photo ? { photo, photo_checked: true } : {}) };
-  const srcUrl = str(p.source_url, 500);
+  // only a real web link can be stored (a "javascript:" link would run in a friend's browser when they tap it)
+  const srcRaw = str(p.source_url, 500);
+  const srcUrl = srcRaw && /^https?:\/\/[^\s]+$/i.test(srcRaw) ? srcRaw : null;
   const [row] = await sql`insert into pinpai.places
     (trip_id, name, category, lat, lng, address, day_index, sort_order, start_time, duration_min, notes, details, source, source_url, added_by)
     values (${tripId}, ${name}, ${cleanCategory(p.category)}, ${okCoord ? lat : null}, ${okCoord ? lng : null},

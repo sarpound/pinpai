@@ -332,7 +332,8 @@ export async function addHotelTasks(tripId: string, nDays: number, onlyDay: Scop
     }
     // departure day that leaves town (Hakone → Tokyo → Narita): check out and take the bags along — no coming back for them
     const leavesTown = d === nDays - 1 && d > 0 && last.category === "transport" && stops.length >= 2
-      && stops.slice(0, -1).some((r) => r.lat != null && kmBetween(r, stayFor(d - 1)) > 30);
+      && (() => { const lastSeen = [...stops.slice(0, -1)].reverse().find((r) => r.lat != null && r.category !== "transport") ?? [...stops.slice(0, -1)].reverse().find((r) => r.lat != null);
+        return !!lastSeen && kmBetween(lastSeen, stayFor(d - 1)) > 30; })();   // where they are before the airport is far from the hotel
     if (leavesTown) {
       const h = stayFor(d - 1);
       add.push({ sort: Number(first.sort_order) - 5, h, dur: 20, name: `🧳 เช็กเอาต์ ${shortHotel(h.name)}`, why: "เช็กเอาต์ แล้วเอากระเป๋าไปด้วย (วันนี้ไม่ได้กลับมาแถวที่พัก) · สถานีใหญ่มีล็อกเกอร์ฝากกระเป๋า" });

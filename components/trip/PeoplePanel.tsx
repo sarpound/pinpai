@@ -16,6 +16,21 @@ export default function PeoplePanel({ trip, members, locations, activity, me, to
   const [edit, setEdit] = useState(false);
   const [f, setF] = useState({ title: trip.title, destination: trip.destination ?? "", start_date: trip.start_date ?? "", end_date: trip.end_date ?? "" });
   const [err, setErr] = useState<string | null>(null);
+  const owner = members.find((m) => m.id === me)?.role === "owner";
+  const [confirm, setConfirm] = useState<string | null>(null);   // member id (or "invite") waiting for a second tap
+
+  async function removeMember(mid: string) {
+    if (confirm !== mid) return setConfirm(mid);
+    setConfirm(null);
+    try { await api(`/api/trips/${trip.id}/members?mid=${mid}`, { token, method: "DELETE" }); onChanged(); toast("เอาออกจากทริปแล้ว"); }
+    catch (e) { toast((e as Error).message); }
+  }
+  async function rotateInvite() {
+    if (confirm !== "invite") return setConfirm("invite");
+    setConfirm(null);
+    try { await api(`/api/trips/${trip.id}`, { token, method: "PATCH", body: { rotate_invite: true } }); onChanged(); toast("เปลี่ยนลิงก์แล้ว ลิงก์เก่าใช้ไม่ได้แล้ว"); }
+    catch (e) { toast((e as Error).message); }
+  }
 
   async function copy() {
     try { await navigator.clipboard.writeText(link); toast("คัดลอกลิงก์แล้ว"); } catch { toast(link); }
@@ -45,6 +60,12 @@ export default function PeoplePanel({ trip, members, locations, activity, me, to
             className="inline-flex h-10 items-center justify-center rounded-full bg-[#06C755] text-[14px] font-semibold text-white hover:brightness-95">ส่งทาง LINE</a>
           <Button variant="secondary" size="sm" onClick={nativeShare}><IconShare size={16} />แชร์ช่องทางอื่น</Button>
         </div>
+        {owner && (
+          <button onClick={rotateInvite} onBlur={() => confirm === "invite" && setConfirm(null)}
+            className="mt-2 min-h-9 text-[13px] font-medium text-muted underline-offset-2 hover:text-ink hover:underline">
+            {confirm === "invite" ? "แตะอีกครั้งเพื่อยืนยัน · ลิงก์เดิมจะใช้ไม่ได้ (คนที่อยู่ในทริปแล้วไม่หลุด)" : "ลิงก์หลุดไปที่อื่น? เปลี่ยนลิงก์เชิญใหม่"}
+          </button>
+        )}
       </section>
 
       <section>
@@ -69,6 +90,12 @@ export default function PeoplePanel({ trip, members, locations, activity, me, to
                   <span className="block truncate font-medium">{m.name}{m.id === me ? " (คุณ)" : ""}{m.role === "owner" ? <span className="text-muted"> · เจ้าของทริป</span> : null}</span>
                   <span className="block text-[12px] text-muted">{loc ? `แชร์ตำแหน่งอยู่ · อัปเดต${ago(loc.updated_at)}` : `เข้าล่าสุด${ago(m.last_seen)}`}</span>
                 </span>
+                {owner && m.id !== me && (
+                  <button onClick={() => removeMember(m.id)} onBlur={() => confirm === m.id && setConfirm(null)}
+                    className={`h-9 shrink-0 rounded-full px-3 text-[13px] font-medium ${confirm === m.id ? "bg-danger text-white" : "text-muted hover:bg-sunken hover:text-ink"}`}>
+                    {confirm === m.id ? "ยืนยันเอาออก" : "เอาออก"}
+                  </button>
+                )}
               </li>
             );
           })}

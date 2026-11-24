@@ -16,6 +16,10 @@ export async function GET(req: Request) {
     const results = await suggestDestinations(q);
     return NextResponse.json({ results, source: "photon" }, { headers: { "Cache-Control": results.length ? "public, s-maxage=604800, stale-while-revalidate=2592000" : "public, s-maxage=60" } });
   }
+  // place search hits OpenStreetMap's shared Nominatim (1 req/s policy): only for members of a trip, so it can't be used as an open proxy
+  const tripParam = sp.get("trip");
+  try { if (!tripParam) throw new HttpError(401, "กรุณาเข้าร่วมทริปก่อน"); await requireMember(req, tripParam); }
+  catch (e) { return NextResponse.json({ results: [], error: e instanceof HttpError ? e.message : "ระบบขัดข้อง" }, { status: e instanceof HttpError ? e.status : 500 }); }
   const lat = Number(sp.get("lat")), lng = Number(sp.get("lng"));
   const near = sp.get("lat") && Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180 ? { lat, lng } : null;
   const r = await searchPlaces(q, near, { limit: 7, deep: sp.get("deep") === "1" });
@@ -25,7 +29,6 @@ export async function GET(req: Request) {
   const weak = !r.results.length || (r.results[0].score ?? 0) < 35;
   if (trip && near && hasThai(q) && !isInThailand(near) && weak && q.length >= 3) {
     try {
-      await requireMember(req, trip);
       const key = `tr:${near.lat.toFixed(1)},${near.lng.toFixed(1)}:${q.toLowerCase()}`;
       const [hit] = await sql`select data from pinpai.route_cache where key = ${key}`;
       let names: string[] = hit?.data?.queries ?? [];

@@ -12,6 +12,8 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/expe
     const b = await readJson(req);
     const amount = num(b.amount);
     if (amount == null || !(amount > 0) || amount >= 1e8) throw new HttpError(400, "ใส่จำนวนเงินให้ถูกต้อง");
+    const [{ c }] = await sql`select count(*)::int as c from pinpai.expenses where trip_id = ${id}`;
+    if (c >= 2000) throw new HttpError(400, "ทริปนี้มีรายการค่าใช้จ่ายครบ 2,000 รายการแล้ว");
     const members = (await sql`select id, name from pinpai.members where trip_id = ${id}`) as unknown as { id: string; name: string }[];
     const ids = new Set(members.map((m) => m.id));
     const paidBy = typeof b.paid_by === "string" && ids.has(b.paid_by) ? b.paid_by : me.id;

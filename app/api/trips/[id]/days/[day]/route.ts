@@ -20,6 +20,8 @@ export async function PUT(req: Request, ctx: RouteContext<"/api/trips/[id]/days/
     const me = await requireMember(req, id);
     const day = Number(dayStr);
     if (!Number.isInteger(day) || day < 0 || day > 60) throw new HttpError(400, "วันไม่ถูกต้อง");
+    const [span] = await sql`select (end_date - start_date + 1)::int as n from pinpai.trips where id = ${id}`;
+    if (span?.n != null && day >= span.n) throw new HttpError(400, "วันนี้อยู่นอกช่วงทริป");
     const b = await readJson<{ stamp?: string; order?: unknown; edits?: Record<string, Edit>; retime?: boolean; restore?: boolean;
       drop?: unknown; times?: Record<string, { start_time?: string | null; duration_min?: number | null }> }>(req);
     // stops taken out of the day → back to the wishlist ("รอจัด")

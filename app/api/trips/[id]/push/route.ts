@@ -4,7 +4,7 @@ import { handle, requireMember, readJson, HttpError } from "@/lib/auth";
 import { vapid, notify } from "@/lib/push";
 
 // only real push services, so the server can't be pointed at arbitrary hosts
-const HOSTS = /^https:\/\/([a-z0-9-]+\.)*(push\.apple\.com|googleapis\.com|mozilla\.com|notify\.windows\.com|push\.services\.mozilla\.com)\//i;
+const HOSTS = /^https:\/\/([a-z0-9-]+\.)*(push\.apple\.com|fcm\.googleapis\.com|android\.googleapis\.com|push\.services\.mozilla\.com|notify\.windows\.com)\//i;
 
 /** GET → the public key the browser needs to subscribe + whether I already have a device registered */
 export async function GET(req: Request, ctx: RouteContext<"/api/trips/[id]/push">) {
