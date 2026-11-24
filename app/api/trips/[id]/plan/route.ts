@@ -400,6 +400,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
       }
       // the same venue twice (a rooftop bar and then "dinner" at the same bar, or one restaurant for two meals): keep the first
       const seenVenue: { r: Res; key: string }[] = [];
+      const otherKeys = new Set(others.map(norm).filter((k) => k.length >= 4));
       for (const r of resolved.filter((x) => x.it.category !== "stay" && x.it.category !== "transport" && !dropped.has(x)).sort((x, y) => x.it.day - y.it.day || x.it.order - y.it.order)) {
         const keys = [norm(r.label), norm(r.it.name), r.it.name_local ? norm(r.it.name_local) : ""].filter((k) => k.length >= 4);
         const same = (v: { r: Res }) => v.r.it.day === r.it.day;
@@ -408,7 +409,8 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
           (eatsHere && (v.r.it.category === "food" || v.r.it.category === "cafe") && v.r.pt && r.pt && distKm(v.r.pt, r.pt) < 0.03) ||
           (same(v) && keys.some((k) => Math.min(k.length, v.key.length) >= 5 && (v.key.includes(k) || k.includes(v.key)))) ||
           (same(v) && v.r.pt && r.pt && distKm(v.r.pt, r.pt) < 0.05));
-        if (dup && !r.existingId) { dropped.add(r); continue; }
+        // …or a venue another day of the trip already has (long trips are planned in blocks)
+        if (!r.existingId && (dup || keys.some((k) => otherKeys.has(k)))) { dropped.add(r); continue; }
         for (const k of keys) seenVenue.push({ r, key: k });
       }
       // tasting menus / fine dining take ~3 hours and need a booking

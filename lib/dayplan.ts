@@ -61,6 +61,14 @@ const hm2 = (t: string | null) => (t && /^\d{2}:\d{2}/.test(t) ? Number(t.slice(
 
 /** which days a post-pass touches: one day, a block of days (long trips are planned a few days at a time), or all */
 export type Scope = number | [number, number] | null;
+/** the hotel of the night of day d (multi-city trips change hotel); the morning of day d is hotelOn(d - 1) */
+async function hotels(tripId: string) {
+  const rows = await sql`select lat::float8 as lat, lng::float8 as lng, day_index from pinpai.places where trip_id = ${tripId} and category = 'stay' and lat is not null order by day_index nulls first`;
+  return (d: number): { lat: number; lng: number } | null => {
+    const r = rows.filter((x) => (x.day_index ?? 0) <= Math.max(0, d)).pop() ?? rows[0];
+    return r ? { lat: Number(r.lat), lng: Number(r.lng) } : null;
+  };
+}
 export const inScope = (d: number, sc: Scope) => sc == null || (typeof sc === "number" ? d === sc : d >= sc[0] && d <= sc[1]);
 
 const AIRPORT = /airport|สนามบิน|空港|공항|機場|机场|aéroport|aeropuerto|aeroporto|flughafen|luchthaven|lapangan terbang|bandara/i;
@@ -324,16 +332,18 @@ export async function addHotelTasks(tripId: string, nDays: number, onlyDay: Scop
 export async function addRunRoutes(tripId: string, nDays: number, onlyDay: Scope) {
   const [t] = await sql`select prefs, dest_lat::float8 as lat, dest_lng::float8 as lng from pinpai.trips where id = ${tripId}`;
   if (!t || !(t.prefs?.wants ?? []).includes("run") || nDays < 3) return [] as number[];
-  const [stay] = await sql`select lat::float8 as lat, lng::float8 as lng from pinpai.places where trip_id = ${tripId} and category = 'stay' and lat is not null order by day_index nulls last limit 1`;
-  const hotel: { lat: number; lng: number } | null = stay ? { lat: Number(stay.lat), lng: Number(stay.lng) } : t.lat != null ? { lat: Number(t.lat), lng: Number(t.lng) } : null;
-  if (!hotel) return [];
+  const hotelOn = await hotels(tripId);
+  const dest = t.lat != null ? { lat: Number(t.lat), lng: Number(t.lng) } : null;
+  if (!hotelOn(0) && !dest) return [];
   const { runRoutesNear, runMinutes } = await import("./activities");
-  const routes = runRoutesNear(hotel);
   const RUNLIKE = /วิ่ง|\brun\b|jog/i;
   const touched: number[] = [];
   let k = 0;
   for (let d = 1; d < nDays - 1; d++) {
     if (!inScope(d, onlyDay)) { k++; continue; }
+    // a morning run starts from where people slept (multi-city trips: that city's routes)
+    const hotel = hotelOn(d - 1) ?? dest!;
+    const routes = runRoutesNear(hotel);
     const rows = await loadDay(sql, tripId, d);
     const stops = rows.filter((r) => r.category !== "stay");
     if (rows.some((r) => r.details?.kind === "run" || (RUNLIKE.test(r.name) && (r.details?.user_edited || r.details?.fixed_time)))) { k++; continue; }
@@ -387,7 +397,7 @@ export async function fillMissingMeals(tripId: string, nDays: number, onlyDay: S
   const norm = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
   const used = new Set(all.flatMap((r) => [norm(r.name), ...(/\(([^()]+)\)\s*$/.exec(r.name) ? [norm(/\(([^()]+)\)\s*$/.exec(r.name)![1])] : [])]));
   const WIN: Record<string, [number, number, number]> = { breakfast: [420, 600, 480], lunch: [660, 870, 750], dinner: [1050, 1260, 1140] }; // [from, to, ideal]
-  const [stay] = await sql`select lat::float8 as lat, lng::float8 as lng from pinpai.places where trip_id = ${tripId} and category = 'stay' and lat is not null order by day_index nulls last limit 1`;
+  const hotelOn = await hotels(tripId);
   let filled = 0;
   for (let d = 0; d < nDays && Date.now() < deadline && filled < 10; d++) {
     if (!inScope(d, onlyDay)) continue;
@@ -412,7 +422,8 @@ export async function fillMissingMeals(tripId: string, nDays: number, onlyDay: S
       const at = Math.min(Math.max(ideal, open), close - 60, b - 30);
       const endsEarly = !dep && last < a + 30;                                 // day over before the meal: eat near where people sleep
       const before = timed.filter((x) => x.t <= at && x.r.lat != null).pop() ?? timed.find((x) => x.r.lat != null);
-      const home = stay ? { lat: Number(stay.lat), lng: Number(stay.lng) } : null;
+      // breakfast near where people slept; an early-ending day's dinner near where they sleep tonight
+      const home = meal === "breakfast" ? hotelOn(d - 1) : hotelOn(d);
       const near = (meal === "breakfast" || endsEarly) && home ? home : before ? { lat: before.r.lat!, lng: before.r.lng! } : null;
       if (!near) continue;
       const list = await eateriesNear(near, meal === "breakfast" ? "cafe" : "restaurant", food.includes("halal") ? "halal" : food.includes("veg") ? "veg" : null).catch(() => []);
@@ -471,8 +482,7 @@ export async function ensureWants(tripId: string, nDays: number, onlyDay: Scope,
   if (!missing.length || onlyDay != null) return [];
   const { placesNear } = await import("./eats");
   const { sunTimes, tzOffsetMin } = await import("./geo");
-  const [st] = await sql`select lat::float8 as lat, lng::float8 as lng from pinpai.places where trip_id = ${tripId} and category = 'stay' and lat is not null order by day_index nulls last limit 1`;
-  const home = st ? { lat: Number(st.lat), lng: Number(st.lng) } : null;
+  const hotelOn = await hotels(tripId);
   const full = Array.from({ length: nDays }, (_, d) => d).filter((d) => nDays <= 2 || (d > 0 && d < nDays - 1));
   const used = new Map<number, number>();
   const done: string[] = [];
@@ -485,6 +495,8 @@ export async function ensureWants(tripId: string, nDays: number, onlyDay: Scope,
     if (day == null) continue;
     const rows = (await loadDay(sql, tripId, day)).filter((r) => r.category !== "stay");
     let at: number;
+    // morning things start from where people slept, the rest from tonight's hotel
+    const home = hotelOn(spec.at === "sunrise" || spec.near === "hotel" ? day - 1 : day);
     if (spec.at === "sunset" || spec.at === "sunrise") {
       const date = t?.start_date ? new Date(Date.parse(t.start_date) + day * 864e5).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10);
       const p = home ?? rows.find((r) => r.lat != null);
