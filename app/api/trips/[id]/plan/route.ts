@@ -4,7 +4,7 @@ import { handle, requireMember, readJson, str, num, HttpError } from "@/lib/auth
 import { planTrip, planOutline, settleDay, mealsNear, stopRules } from "@/lib/ai";
 import { randomUUID } from "crypto";
 import { notify } from "@/lib/push";
-import { resolvePlace, medianOffset, distKm, sunTimes, tzOffsetMin } from "@/lib/geo";
+import { resolvePlace, medianOffset, distKm, sunTimes, tzOffsetMin, geocodeArea } from "@/lib/geo";
 import { mapLimit, fillTripPhotos } from "@/lib/photos";
 import { aiBudget } from "@/lib/limits";
 import { retimeStored, addHotelTasks, addRunRoutes, fillMissingMeals, tidyDays, ensureWants, inScope, type Scope } from "@/lib/dayplan";
@@ -194,8 +194,10 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
       const baseNames = [...new Set(o.days.map((d) => d.base))].slice(0, 15);
       const basePt = new Map<string, { lat: number; lng: number }>();
       await mapLimit(baseNames, 3, async (b) => {
-        const hit = await resolvePlace(b, null, anchor, 3000, { anchor, areaKm: 3000 }).catch(() => null);
-        if (hit) basePt.set(b, { lat: hit.lat, lng: hit.lng });
+        // a city / island / province, not a shop that happens to share the name ("Chiang Mai" noodle bar near Bangkok)
+        const same = b.toLowerCase().includes(String(trip.destination).toLowerCase());
+        const hit = (!same ? await geocodeArea(`${b}, ${trip.destination}`).catch(() => null) : null) ?? await geocodeArea(b).catch(() => null);
+        if (hit && (!anchor || distKm(hit, anchor) < 2500)) basePt.set(b, { lat: hit.lat, lng: hit.lng });
       });
       const stays = await mapLimit(o.stays, 4, async (st) => {
         const base = o.days.find((d) => d.day === Math.round(st.check_in_day))?.base;

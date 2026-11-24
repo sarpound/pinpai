@@ -200,6 +200,15 @@ export async function geocodeDestination(q: string): Promise<GeoHit | null> {
   return (await nominatim(q, null, 1))[0] ?? null;
 }
 
+/** A city / island / province on a long trip's route ("Koh Lanta, Thailand"): only an area counts, never a shop or a hotel sharing the name. */
+export async function geocodeArea(q: string): Promise<GeoHit | null> {
+  const h = await geocodeDestination(q).catch(() => null);
+  if (h && /^(place|boundary):/.test(h.kind ?? "")) return h;
+  // islands and some towns are not in the city layers: ask Nominatim, which ranks areas first
+  const n = (await nominatim(q, null, 3).catch(() => [] as GeoHit[]))[0];
+  return n ?? null;
+}
+
 /** Autocomplete for trip destinations: cities, provinces, islands, countries. */
 export async function suggestDestinations(q: string): Promise<GeoHit[]> {
   const key = `destsug|${norm(q)}`;
