@@ -242,7 +242,9 @@ export async function tidyDays(tripId: string, nDays: number, onlyDay: Scope, de
         .filter((x): x is { r: DayRow; t: number } => x.t != null && x.t >= a && x.t <= b);
       const kept: typeof meals = [];
       for (const m of meals) {
-        const clash = kept.filter((k) => Math.abs(m.t - k.t) < 180);
+        // a second sit-down restaurant late at night after dinner already happened is a second dinner too (a snack street / night market isn't)
+        const lateSecond = a === 1050 && m.t >= 22 * 60 && !/street|night|market|ตลาด|夜市|屋台|yatai|snack|dessert|ของหวาน|โจ๊ก|congee|ramen/i.test(m.r.name);
+        const clash = kept.filter((k) => Math.abs(m.t - k.t) < 180 || lateSecond);
         if (!clash.length) { kept.push(m); continue; }
         if (m.r.category === "food" && isAi(m.r)) { await drop(m.r, true); notes.push(`มื้อซ้ำ: ${m.r.name}`); changed = true; continue; }
         // a dinner cruise / buffet after a restaurant: the cruise is the dinner
@@ -533,7 +535,9 @@ export async function fillMissingMeals(tripId: string, nDays: number, onlyDay: S
       const [a, b, ideal] = WIN[meal];
       if (meal === "breakfast" && (d === 0 || first > 9 * 60 + 30)) continue;
       if (Math.max(a, open) > b - 30 || Math.min(b, close) < a + 45) continue;          // not here then (landing late / flying out)
-            const has = timed.some((x) => (x.r.category === "food" || x.r.category === "cafe") && x.t >= a - (meal === "dinner" ? 15 : 45) && x.t <= b + 30);
+      // a late dinner (21:45 after a night market) is still dinner: don't add a second one at 19:00
+      const has = timed.some((x) => (x.r.category === "food" || x.r.category === "cafe") && x.t >= a - (meal === "dinner" ? 15 : 45)
+        && (x.t <= b + 30 || (meal === "dinner" && x.r.category === "food")));
       if (has) continue;
       const at = Math.min(Math.max(ideal, open), close - 60, b - 30);
       const endsEarly = !dep && last < a + 30;                                 // day over before the meal: eat near where people sleep
