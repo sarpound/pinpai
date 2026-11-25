@@ -629,7 +629,7 @@ export default function TripApp({ tripId, importUrl, openPlan }: { tripId: strin
     const rows = dayRows(d), stops = rows.filter((x) => x.category !== "stay");
     if (!stops.length) return [];
     const toR = (x: Place) => ({ id: x.id, name: x.name, category: x.category, lat: x.lat, lng: x.lng, start_time: x.start_time, duration_min: x.duration_min,
-      fixed: !!x.details?.fixed_time && !!x.start_time, userDur: !!x.details?.user_dur, visited: x.visited });
+      fixed: (!!x.details?.fixed_time || !!x.details?.sun_time) && !!x.start_time, userDur: !!x.details?.user_dur, visited: x.visited });
     return bestSlots(stops.map(toR), { ...cand, duration_min: null }, dayCtx(d)).map((sl) => ({
       ...sl, body: sl.after_id ? { after_id: sl.after_id } : { sort_order: stops[0].sort_order - 1 } }));
   };

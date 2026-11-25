@@ -330,6 +330,6 @@ export default function DayEditor({ day, rows, color, ctx: ctx0, today, onSave, 
 
   function toStopOf(r: Place): RStop {
     return { id: r.id, name: r.name, category: r.category, lat: r.lat, lng: r.lng, start_time: r.start_time, duration_min: r.duration_min,
-      fixed: !!r.details?.fixed_time && r.start_time != null, userDur: !!r.details?.user_dur, visited: r.visited };
+      fixed: (!!r.details?.fixed_time || !!r.details?.sun_time) && r.start_time != null, userDur: !!r.details?.user_dur, visited: r.visited };
   }
 }

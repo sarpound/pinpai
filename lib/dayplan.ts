@@ -23,7 +23,7 @@ export const stampOf = (rows: DayRow[]) => dayStamp(rows.map((r) => ({ ...r, det
 
 export const toRStop = (r: DayRow): RStop => ({
   id: r.id, name: r.name, category: r.category, lat: r.lat, lng: r.lng, start_time: r.start_time, duration_min: r.duration_min,
-  fixed: !!r.details?.fixed_time, userDur: !!r.details?.user_dur, visited: r.visited,
+  fixed: !!r.details?.fixed_time || !!r.details?.sun_time, userDur: !!r.details?.user_dur, visited: r.visited,
 });
 
 /** travel mode + "leave for the airport" time for a day, from the trip's saved prefs and members' flights */
@@ -202,10 +202,11 @@ export async function tidyDays(tripId: string, nDays: number, onlyDay: Scope, de
           const rise = sun ? hm2(sun.rise) : null, st = hm2(r.start_time);
           const trek = /trek|hike|climb|summit|volcano|ภูเขาไฟ|เดินป่า|ปีน|batur|bromo|ijen|fuji|登山/i.test(txt);
           const [lo, hi, want] = trek ? [150, 60, 120] : [60, 0, 25];
-          if (rise == null || st == null || (st >= rise - lo && st <= rise - hi)) continue;
+          if (rise == null || st == null) continue;
+          if (st >= rise - lo && st <= rise - hi) { await sql`update pinpai.places set details = details || ${sql.json({ sun_time: true } as never)} where id = ${r.id} and trip_id = ${tripId}`; continue; }
           const at = Math.max(3 * 60, rise - want);
           await sql`update pinpai.places set start_time = ${`${String(Math.floor(at / 60)).padStart(2, "0")}:${String(at % 60).padStart(2, "0")}`},
-            details = details || ${sql.json({ why: `${String(r.details?.why ?? "").replace(/\s*· พระอาทิตย์ขึ้น.*$/, "").slice(0, 220)} · พระอาทิตย์ขึ้น ~${sun!.rise}${trek ? " (ออกเดินก่อนสว่าง)" : ""}` } as never)} where id = ${r.id} and trip_id = ${tripId}`;
+            details = details || ${sql.json({ sun_time: true, why: `${String(r.details?.why ?? "").replace(/\s*· พระอาทิตย์ขึ้น.*$/, "").slice(0, 220)} · พระอาทิตย์ขึ้น ~${sun!.rise}${trek ? " (ออกเดินก่อนสว่าง)" : ""}` } as never)} where id = ${r.id} and trip_id = ${tripId}`;
           await sql`update pinpai.places p set sort_order = q.n * 10 from (select id, row_number() over (order by (start_time is null), start_time, sort_order) as n
             from pinpai.places where trip_id = ${tripId} and day_index = ${d} and category <> 'stay') q where p.id = q.id`;
           notes.push(`ย้ายชมพระอาทิตย์ขึ้นเป็น ${sun!.rise}: ${r.name}`); changed = true;
@@ -214,10 +215,12 @@ export async function tidyDays(tripId: string, nDays: number, onlyDay: Scope, de
         if (!/พระอาทิตย์ตก|sunset|夕阳|日落|夕日/i.test(txt)) continue;
         const sun = sunTimes(r.lat, r.lng!, date, tzOffsetMin(r.lat, r.lng!, date));
         const set = sun ? hm2(sun.set) : null, st = hm2(r.start_time);
-        if (set == null || st == null || (st >= set - 75 && st <= set)) continue;
+        if (set == null || st == null) continue;
+        // pinned to the sun from here on: later inserts (a wanted bike ride, a meal) flow around it instead of pushing it past dark
+        if (st >= set - 75 && st <= set) { await sql`update pinpai.places set details = details || ${sql.json({ sun_time: true } as never)} where id = ${r.id} and trip_id = ${tripId}`; continue; }
         const at = set - 40;
         await sql`update pinpai.places set start_time = ${`${String(Math.floor(at / 60)).padStart(2, "0")}:${String(at % 60).padStart(2, "0")}`},
-          details = details || ${sql.json({ why: `${String(r.details?.why ?? "").replace(/\s*· พระอาทิตย์ตก.*$/, "").slice(0, 220)} · พระอาทิตย์ตก ~${sun!.set}` } as never)} where id = ${r.id} and trip_id = ${tripId}`;
+          details = details || ${sql.json({ sun_time: true, why: `${String(r.details?.why ?? "").replace(/\s*· พระอาทิตย์ตก.*$/, "").slice(0, 220)} · พระอาทิตย์ตก ~${sun!.set}` } as never)} where id = ${r.id} and trip_id = ${tripId}`;
         // slot it by its new time
         await sql`update pinpai.places p set sort_order = q.n * 10 from (select id, row_number() over (order by (start_time is null), start_time, sort_order) as n
           from pinpai.places where trip_id = ${tripId} and day_index = ${d} and category <> 'stay') q where p.id = q.id`;
@@ -636,7 +639,9 @@ export async function ensureWants(tripId: string, nDays: number, onlyDay: Scope,
     const homeOk = home && (!dayPts.length || dayPts.some((r) => kmBetween(r, home) <= 25));
     const near = spec.near === "hotel" && homeOk ? home : before ? { lat: before.lat!, lng: before.lng! } : homeOk ? home : null;
     if (!near) continue;
-    const list = (await placesNear(near, spec.q).catch(() => [])).filter((e) => !(w === "massage" && /school|academy|โรงเรียน/i.test(e.name)));
+    // a map entry is not always a place a visitor goes: a sales office that lends bikes, a car park, a school
+    const JUNK = /售楼|销售中心|sales (office|center|centre)|real estate|showroom|parking|停车|駐車|主車場|ที่จอดรถ|สำนักงานขาย|อสังหา|dormitory|staff only|office$/i;
+    const list = (await placesNear(near, spec.q).catch(() => [])).filter((e) => !JUNK.test(e.name) && !(w === "massage" && /school|academy|โรงเรียน/i.test(e.name)));
     const e = list[0];
     if (!e) continue;
     const sort = before ? Number(before.sort_order) + 5 : 5;

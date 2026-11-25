@@ -551,7 +551,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
       // then let the timetable flow around them (locked times never move, nothing is pulled earlier)
       // the AI named the hotel before the days were placed: now that they are, move a hotel that sits far from them
       // (never one people chose); a one-day re-plan leaves the hotel alone
-      const rehomed = onlyDay != null ? [] : await rehomeHotels(id, typeof sc === "number" ? [sc, sc] : sc, t0 + 150_000).catch((e) => { console.error("rehome", e); return []; });
+      const rehomed = onlyDay != null ? [] : await rehomeHotels(id, typeof sc === "number" ? [sc, sc] : sc, Math.min(t0 + 215_000, Date.now() + 35_000)).catch((e) => { console.error("rehome", e); return []; });
       if (rehomed.length) console.log("rehome", rehomed.map((r) => `${r.from} → ${r.to} (−${r.savedKm} km)`).join(" | "));
       const touchedDays = onlyDay != null ? [onlyDay] : [...new Set(finalList.map((r) => r.it.day))];
       for (const d of touchedDays) {
