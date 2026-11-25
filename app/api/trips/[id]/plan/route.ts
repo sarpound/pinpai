@@ -8,7 +8,8 @@ import { notify } from "@/lib/push";
 import { resolvePlace, medianOffset, distKm, sunTimes, tzOffsetMin, geocodeArea } from "@/lib/geo";
 import { mapLimit, fillTripPhotos } from "@/lib/photos";
 import { aiBudget } from "@/lib/limits";
-import { retimeStored, addHotelTasks, addRunRoutes, fillMissingMeals, tidyDays, ensureWants, inScope, type Scope } from "@/lib/dayplan";
+import { rehomeHotels, rehomeStay } from "@/lib/hotels";
+import { tightenDays, retimeStored, addHotelTasks, addRunRoutes, fillMissingMeals, tidyDays, ensureWants, inScope, type Scope } from "@/lib/dayplan";
 import { verifyTripPlaces } from "@/lib/verify";
 import { hourRule } from "@/lib/retime";
 
@@ -199,6 +200,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
 
     /** the long-trip outline: route of bases, a hotel per base, one area per day; saved places get their day; the old AI plan goes */
     async function runOutline() {
+      const t0Outline = Date.now();
       const o = await planOutline({ destination: trip.destination, days, startDate: trip.start_date, ...prefs, budgetTHB,
         existing: existing.map((e) => ({ name: e.name, day: e.day_index })) }, meter);
       const anchor = trip.lat != null ? { lat: trip.lat, lng: trip.lng } : null;
@@ -241,6 +243,27 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
           costs: o.costs ? Object.fromEntries(Object.entries(o.costs).map(([k, v]) => [k, typeof v === "number" ? Math.max(0, Math.round(v)) : v])) : undefined };
         await tx`update pinpai.trips set guide = ${sql.json(guide as never)} where id = ${id}`;
       });
+      // the outline already says which district each day is in: put each hotel near the middle of its days' districts
+      // now, before any day is planned around it (a day trip 60 km out doesn't pull the hotel)
+      try {
+        const areaPt = new Map<string, { lat: number; lng: number }>();
+        const areas = [...new Set(o.days.map((d) => `${d.area}|${d.base}`))].slice(0, 16);
+        for (const key of areas) {
+          if (Date.now() > t0Outline + 120_000) break;
+          const [area, base] = key.split("|");
+          const bp = basePt.get(base) ?? anchor;
+          const hit = await geocodeArea(`${area.replace(/\(.*?\)/g, "").trim()}, ${base}`).catch(() => null);
+          if (hit && (!bp || distKm(hit, bp) < 40)) areaPt.set(key, { lat: hit.lat, lng: hit.lng });
+        }
+        const rows = await sql`select id, name, day_index, lat::float8 as lat, lng::float8 as lng from pinpai.places
+          where trip_id = ${id} and category = 'stay' and source = 'ai' and day_index is not null order by day_index`;
+        for (let i = 0; i < rows.length; i++) {
+          const from = rows[i].day_index as number, to = (rows[i + 1]?.day_index ?? days) as number;
+          const pts = o.days.filter((d) => d.day >= from && d.day <= Math.min(days - 1, to)).map((d) => areaPt.get(`${d.area}|${d.base}`)).filter((x): x is { lat: number; lng: number } => !!x);
+          const r = await rehomeStay(id, rows[i] as never, pts, prefs.budget, t0Outline + 150_000);
+          if (r) console.log("rehome (outline)", `${r.from} → ${r.to}`);
+        }
+      } catch (e) { console.error("rehome outline", e); }
     }
 
     async function runPlan(sc: Scope, t0: number) {
@@ -526,8 +549,13 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
       });
       // stops people placed by hand that the AI didn't mention are still on their day: slot everything by time,
       // then let the timetable flow around them (locked times never move, nothing is pulled earlier)
+      // the AI named the hotel before the days were placed: now that they are, move a hotel that sits far from them
+      // (never one people chose); a one-day re-plan leaves the hotel alone
+      const rehomed = onlyDay != null ? [] : await rehomeHotels(id, typeof sc === "number" ? [sc, sc] : sc, t0 + 150_000).catch((e) => { console.error("rehome", e); return []; });
+      if (rehomed.length) console.log("rehome", rehomed.map((r) => `${r.from} → ${r.to} (−${r.savedKm} km)`).join(" | "));
       const touchedDays = onlyDay != null ? [onlyDay] : [...new Set(finalList.map((r) => r.it.day))];
       for (const d of touchedDays) {
+        if (rehomed.length) { await sql.begin((tx) => retimeStored(tx, id, d, { keepGaps: true })).catch(() => {}); }
         const extra = await sql`select 1 from pinpai.places where trip_id = ${id} and day_index = ${d} and category <> 'stay'
           and not (id = any(${keep}::uuid[])) and (source <> 'ai' or details ? 'user_edited') limit 1`;
         const locked = finalList.some((r) => r.it.day === d && (r.it as { fixed?: boolean }).fixed);
@@ -541,6 +569,15 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
       }
       // running first: real scenic routes near the hotel instead of the AI's guessed "running spot" (tidy then knows where mornings start)
       await addRunRoutes(id, days, sc).catch((e) => console.error("run routes", e));
+      // geography: a stop far from the rest of its day moves to a day around there, free sights are put in the
+      // shortest order between meals / locked times, and days that still need a lot of driving are flagged for the app
+      await tightenDays(id, days, sc, t0 + 235_000).then(async ({ notes, flags }) => {
+        if (notes.length) console.log("tighten", notes.join(" | "));
+        await sql`update pinpai.trips set guide = jsonb_set(coalesce(guide, '{}'::jsonb), '{flags}',
+            coalesce((select jsonb_agg(f) from jsonb_array_elements(coalesce(guide->'flags', '[]'::jsonb)) f
+              where not ((f->>'day')::int between ${typeof sc === "number" ? sc : sc ? sc[0] : 0} and ${typeof sc === "number" ? sc : sc ? sc[1] : 999})), '[]'::jsonb) || ${sql.json(flags as never)})
+          where id = ${id}`;
+      }).catch((e) => console.error("tighten", e));
       // nothing before landing / after take-off, closed-for-good places, double dinners, diet clashes
       await tidyDays(id, days, sc, t0 + 240_000).then((n) => n.length && console.log("tidy", n.join(" | "))).catch((e) => console.error("tidy", e));
       // real, known, still open? (Wikipedia / Wikidata) — closed-for-good sights leave the plan

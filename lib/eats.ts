@@ -8,7 +8,7 @@ const UA = "PinPai/0.2 (trip planner; https://pinpai-sarpounds-projects.vercel.a
 export type Eatery = { name: string; lat: number; lng: number; address: string; cuisine: string | null; hours: string | null; brand: boolean; kind: string; halal?: boolean; veg?: boolean };
 
 let lastCall = 0;
-async function nominatim(url: string) {
+export async function nominatim(url: string) {
   const wait = lastCall + 1100 - Date.now();
   if (wait > 0) await new Promise((r) => setTimeout(r, wait));
   lastCall = Date.now();

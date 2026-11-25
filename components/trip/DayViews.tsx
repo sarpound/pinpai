@@ -250,6 +250,21 @@ export function DayView({ index, label, theme, color, places, me, route, hotel, 
           <button onClick={onSortTime} className="h-9 shrink-0 rounded-full bg-ink px-3 font-semibold text-white">เรียงตามเวลา</button>
         </div>
       )}
+      {(() => {
+        // a day that spends a lot of its time in a car/train (the AI mixed two areas): say so and offer a fix
+        const km = Math.round(legs.reduce((a, l) => a + (l?.km ?? 0), 0));
+        const heavy = places.length >= 2 && total > (index === 0 || lastDay ? 240 : 180);
+        if (!heavy) return null;
+        return (
+          <div className="mt-3 rounded-[14px] bg-[#FFF4D6] px-3 py-2.5 text-[13px] text-ink" role="status">
+            <p className="font-semibold">🚗 วันนี้อยู่บนถนนรวม ~{fmtDur(total)} ({km} กม.)</p>
+            <p className="mt-0.5 text-muted">ที่เที่ยวอยู่คนละโซน ลองย้ายบางที่ไปวันอื่นด้วย “แก้/เรียง” {onReplanDay && canReplanDay ? "หรือให้ระบบจัดวันนี้ใหม่ให้อยู่โซนเดียวกัน" : ""}</p>
+            {onReplanDay && canReplanDay && !planning && (
+              <button onClick={() => onReplanDay()} className="mt-2 h-9 rounded-full bg-ink px-3 font-semibold text-white">จัดวันนี้ใหม่</button>
+            )}
+          </div>
+        );
+      })()}
       {places.length === 0 ? (
         <div className="mt-4 rounded-[20px] bg-ink p-5 text-white">
           <p className="text-[17px] font-semibold">วันนี้ยังว่าง</p>

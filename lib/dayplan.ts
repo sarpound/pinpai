@@ -651,3 +651,172 @@ export async function ensureWants(tripId: string, nDays: number, onlyDay: Scope,
   }
   return done;
 }
+
+// ───────────────────────── day coherence ─────────────────────────
+// The AI groups days by theme more than by map, so a day can zig-zag (Ubud → Uluwatu → Ubud) or hold one stop
+// 40 km from the rest. This pass works from coordinates only:
+//   1. a stop far from the rest of its day moves to a day that is already around there (or to "รอจัด");
+//   2. the free sights between fixed points (meals, locked times, runs, sunrise/sunset, transport, hotel tasks)
+//      are re-ordered for the shortest path, so the day stops backtracking;
+//   3. days that still need a lot of travel are reported (the app offers "จัดวันนี้ใหม่").
+
+const SUNLIT = /พระอาทิตย์(ขึ้น|ตก)|sunrise|sunset|日出|日落|夕阳|夕日|日の出|일출|일몰|해돋이/i;
+const DAYTRIP = /day ?trip|เที่ยวไป-กลับ|ไปกลับ|นอกเมือง|ข้ามเกาะ|island hop|excursion|日帰り|一日游/i;
+
+/** fixed points of a day: the reorder never moves these, and never moves anything across them */
+function isAnchor(r: DayRow) {
+  const k = r.details?.kind as string | undefined;
+  return r.category === "stay" || r.category === "transport" || r.category === "food" || r.category === "cafe" || !!k
+    || !!r.details?.fixed_time || r.visited || SUNLIT.test(`${r.name} ${String(r.details?.why ?? "")}`);
+}
+
+/** total straight-line path of a sequence (km), with optional start and end points */
+function pathKm(seq: { lat: number | null; lng: number | null }[], from?: { lat: number; lng: number } | null, to?: { lat: number; lng: number } | null) {
+  const pts = [...(from ? [from] : []), ...seq, ...(to ? [to] : [])].filter((p) => p.lat != null && p.lng != null);
+  let s = 0;
+  for (let i = 1; i < pts.length; i++) s += kmBetween(pts[i - 1], pts[i]);
+  return s;
+}
+
+/** best order of a short run of stops between two fixed points (exact up to 6 stops, nearest-neighbour + 2-opt beyond) */
+function bestOrder<T extends { lat: number | null; lng: number | null }>(seg: T[], from: { lat: number; lng: number } | null, to: { lat: number; lng: number } | null): T[] {
+  if (seg.length < 2) return seg;
+  if (seg.length <= 6) {
+    let best = seg, bestKm = pathKm(seg, from, to);
+    const perm = (rest: T[], acc: T[]) => {
+      if (!rest.length) { const k = pathKm(acc, from, to); if (k < bestKm - 1e-6) { bestKm = k; best = acc; } return; }
+      for (let i = 0; i < rest.length; i++) perm([...rest.slice(0, i), ...rest.slice(i + 1)], [...acc, rest[i]]);
+    };
+    perm(seg, []);
+    return best;
+  }
+  let order = [...seg];
+  for (let improved = true, n = 0; improved && n < 50; n++) {
+    improved = false;
+    for (let i = 0; i < order.length - 1; i++) for (let j = i + 1; j < order.length; j++) {
+      const cand = [...order.slice(0, i), ...order.slice(i, j + 1).reverse(), ...order.slice(j + 1)];
+      if (pathKm(cand, from, to) < pathKm(order, from, to) - 0.05) { order = cand; improved = true; }
+    }
+  }
+  return order;
+}
+
+export type DayFlag = { day: number; km: number; note: string };
+
+export async function tightenDays(tripId: string, days: number, scope: Scope, deadline: number) {
+  const notes: string[] = [];
+  const flags: DayFlag[] = [];
+  const [trip] = await sql`select prefs from pinpai.trips where id = ${tripId}`;
+  const pace = String(trip?.prefs?.pace ?? "normal");
+  const cap = pace === "relaxed" ? 4 : pace === "packed" ? 7 : 5;          // sights per day, meals not counted
+  const hotelOn = await hotels(tripId);
+  const inS = (d: number) => inScope(d, scope);
+  const load = async () => {
+    const all = new Map<number, DayRow[]>();
+    for (let d = 0; d < days; d++) if (inS(d)) all.set(d, await loadDay(sql, tripId, d));
+    return all;
+  };
+  let all = await load();
+  // where each day really is: the robust middle of its sights (meals and tasks follow the sights, so they don't vote)
+  const sightsOf = (rows: DayRow[]) => rows.filter((r) => r.lat != null && !["stay", "transport", "food", "cafe"].includes(r.category) && !r.details?.kind);
+  const middle = (rows: DayRow[]) => {
+    const pts = sightsOf(rows).map((r) => ({ lat: r.lat!, lng: r.lng! }));
+    if (pts.length < 2) return null;
+    const med = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
+    let c = { lat: med(pts.map((p) => p.lat)), lng: med(pts.map((p) => p.lng)) };
+    const spread = med(pts.map((p) => kmBetween(p, c)));
+    const core = pts.filter((p) => kmBetween(p, c) <= Math.max(5, spread * 3));
+    if (core.length >= 2) c = { lat: med(core.map((p) => p.lat)), lng: med(core.map((p) => p.lng)) };
+    return { c, spread: med(core.map((p) => kmBetween(p, c))) };
+  };
+
+  // 1) outliers: a sight far from the rest of its own day
+  const touched = new Set<number>();
+  for (const [d, rows] of all) {
+    if (Date.now() > deadline) break;
+    if (d === 0 || d === days - 1) continue;                          // arrival / departure days follow the flights
+    const m = middle(rows);
+    if (!m) continue;
+    const limit = Math.max(12, m.spread * 3.5);
+    for (const r of sightsOf(rows)) {
+      if (!isAi(r) || isAnchor(r) || DAYTRIP.test(`${r.name} ${String(r.details?.why ?? "")}`)) continue;
+      const far = kmBetween(r, m.c);
+      if (far <= limit) continue;
+      // a day that is already around there and still has room
+      let target: number | null = null, bestKm = Infinity;
+      for (const [d2, rows2] of all) {
+        if (d2 === d || d2 === 0 || d2 === days - 1) continue;
+        const m2 = middle(rows2);
+        const k = m2 ? kmBetween(r, m2.c) : Infinity;
+        if (k < Math.max(6, (m2?.spread ?? 0) * 2) && k < bestKm && sightsOf(rows2).length < cap) { bestKm = k; target = d2; }
+      }
+      if (target != null) {
+        // slot it next to the nearest sight of that day (before its next fixed point), time worked out by retime
+        const rows2 = all.get(target)!;
+        const near = sightsOf(rows2).sort((a, b) => kmBetween(a, r) - kmBetween(b, r))[0];
+        const sort = near ? near.sort_order + 5 : (rows2.at(-1)?.sort_order ?? 0) + 10;
+        await sql`update pinpai.places set day_index = ${target}, sort_order = ${sort}, start_time = null, updated_at = now() where id = ${r.id} and trip_id = ${tripId}`;
+        notes.push(`ย้าย ${r.name} ไปวันที่ ${target + 1} (อยู่โซนเดียวกัน แทนการนั่งรถ ~${Math.round(far)} กม.)`);
+        touched.add(d); touched.add(target);
+        rows2.push({ ...r, day_index: target, sort_order: sort, start_time: null });
+      } else {
+        await sql`update pinpai.places set day_index = null, start_time = null, sort_order = (select coalesce(max(sort_order), 0) + 10 from pinpai.places where trip_id = ${tripId} and day_index is null),
+            details = coalesce(details, '{}'::jsonb) || ${sql.json({ why: `${String(r.details?.why ?? "").slice(0, 200)} · ย้ายมารอจัด: ไกลจากที่อื่นของวันนั้น ~${Math.round(far)} กม.` } as never)}, updated_at = now()
+          where id = ${r.id} and trip_id = ${tripId}`;
+        notes.push(`${r.name} ไกลจากที่อื่นของวันที่ ${d + 1} ~${Math.round(far)} กม. → ย้ายไปรอจัด`);
+        touched.add(d);
+      }
+      all.set(d, (all.get(d) ?? []).filter((x) => x.id !== r.id));
+    }
+  }
+  for (const d of touched) await renumber(tripId, d);
+  if (touched.size) all = await load();
+
+  // 2) shortest order for the free sights between fixed points
+  for (const [d, rows] of all) {
+    if (Date.now() > deadline) break;
+    const start = hotelOn(d - 1), end = hotelOn(d);
+    let changed = false;
+    const out: DayRow[] = [];
+    let seg: DayRow[] = [];
+    let prev: { lat: number; lng: number } | null = start;
+    const flush = (next: { lat: number; lng: number } | null) => {
+      if (seg.length >= 2 && seg.every((r) => isAi(r))) {
+        const better = bestOrder(seg, prev, next);
+        if (better.some((r, i) => r.id !== seg[i].id) && pathKm(seg, prev, next) - pathKm(better, prev, next) > 1) { seg = better; changed = true; }
+      }
+      out.push(...seg);
+      seg = [];
+    };
+    for (const r of rows) {
+      if (isAnchor(r) || r.lat == null) {
+        flush(r.lat != null ? { lat: r.lat, lng: r.lng! } : null);
+        out.push(r);
+        if (r.lat != null) prev = { lat: r.lat, lng: r.lng! };
+      } else seg.push(r);
+    }
+    flush(end);
+    if (!changed) continue;
+    const moved = new Set(out.filter((r, i) => r.id !== rows[i].id).map((r) => r.id));
+    await sql.begin(async (tx) => {
+      for (let i = 0; i < out.length; i++) {
+        const r = out[i];
+        // a sight that moved gets its time from the new order; everything else keeps its time
+        await tx`update pinpai.places set sort_order = ${(i + 1) * 10}, start_time = ${moved.has(r.id) ? null : r.start_time}, updated_at = now() where id = ${r.id} and trip_id = ${tripId}`;
+      }
+      await retimeStored(tx, tripId, d, { keepGaps: true });
+    }).catch((e) => console.error("reorder", d, e));
+    notes.push(`เรียงลำดับวันที่ ${d + 1} ใหม่ให้ไม่ย้อนไปมา`);
+  }
+  for (const d of touched) await sql.begin((tx) => retimeStored(tx, tripId, d, { keepGaps: true })).catch(() => {});
+
+  // 3) how much moving each day still needs (straight line × road factor); heavy ones get flagged for the app
+  all = await load();
+  for (const [d, rows] of all) {
+    const pts = rows.filter((r) => r.lat != null && r.category !== "stay");
+    const km = Math.round(pathKm(pts, hotelOn(d - 1), d === days - 1 ? null : hotelOn(d)) * 1.3);
+    const dayTrip = rows.some((r) => DAYTRIP.test(`${r.name} ${String(r.details?.why ?? "")}`));
+    if (km > (dayTrip ? 220 : d === 0 || d === days - 1 ? 160 : 90)) flags.push({ day: d, km, note: dayTrip ? "เที่ยวไปกลับไกล" : "วันนี้นั่งรถเยอะ" });
+  }
+  return { notes, flags };
+}
