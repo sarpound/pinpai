@@ -40,9 +40,11 @@ export async function limitDb(req: Request, bucket: string, rules: { max: number
   if (await isQa(req)) return;
   const key = createHash("sha256").update(`${process.env.PINPAI_IP_SALT ?? process.env.DATABASE_URL?.slice(-16) ?? "pinpai"}:${clientIp(req)}`).digest("hex").slice(0, 32);
   for (const r of rules) {
+    // a database hiccup must never lock real people out: count when we can, let the request through when we can't
     const [row] = await sql`insert into pinpai.rate_hits (bucket, key, window_start, n)
       values (${`${bucket}:${r.windowSec}`}, ${key}, to_timestamp(floor(extract(epoch from now()) / ${r.windowSec}) * ${r.windowSec}), 1)
-      on conflict (bucket, key, window_start) do update set n = pinpai.rate_hits.n + 1 returning n`;
+      on conflict (bucket, key, window_start) do update set n = pinpai.rate_hits.n + 1 returning n`
+      .catch((e) => { console.warn("[ratelimit] count failed, allowing", (e as Error).message); return [{ n: 0 }]; });
     if (row.n > r.max) throw new HttpError(429, message ?? `ใช้งานถี่เกินไป ลองใหม่${WAIT(r.windowSec)}`);
   }
   if (Math.random() < 0.01) await sql`delete from pinpai.rate_hits where window_start < now() - interval '2 days'`.catch(() => {});
