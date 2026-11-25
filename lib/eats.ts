@@ -3,17 +3,14 @@
 // opening hours when mapped. Results are cached; requests are spaced ≥1.1 s apart (Nominatim usage policy).
 import { createHash } from "crypto";
 import { sql } from "./db";
+import { osmFetch } from "./osm";
 
 const UA = "PinPai/0.2 (trip planner; https://pinpai-sarpounds-projects.vercel.app)";
 export type Eatery = { name: string; lat: number; lng: number; address: string; cuisine: string | null; hours: string | null; brand: boolean; kind: string; halal?: boolean; veg?: boolean };
 
-let lastCall = 0;
 export async function nominatim(url: string) {
-  const wait = lastCall + 1100 - Date.now();
-  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-  lastCall = Date.now();
-  const r = await fetch(url, { headers: { "User-Agent": UA, "Accept-Language": "en" }, signal: AbortSignal.timeout(8000) });
-  if (!r.ok) return [];
+  const r = await osmFetch(url, { headers: { "User-Agent": UA, "Accept-Language": "en" }, signal: AbortSignal.timeout(8000) }, true);
+  if (!r?.ok) return [];
   return (await r.json()) as { name: string; lat: string; lon: string; display_name: string; type: string; extratags?: Record<string, string> }[];
 }
 

@@ -1,6 +1,7 @@
 // Place search on OpenStreetMap data: Photon (fast, typo-tolerant) → ranked, de-duplicated,
 // cached; Nominatim only as a single fallback (its policy forbids autocomplete use).
 export type GeoHit = { name: string; lat: number; lng: number; address: string; kind?: string; category?: string; score?: number };
+import { osmFetch, photonSlot } from "./osm";
 
 const UA = "PinPai/0.2 (trip planner; https://pinpai-sarpounds-projects.vercel.app)";
 
@@ -86,15 +87,11 @@ async function photon(q: string, near: { lat: number; lng: number } | null, limi
     u.searchParams.set("zoom", "11");
     u.searchParams.set("location_bias_scale", "0.3");
   }
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const r = await fetch(u, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(5000) });
-      if (r.ok && (r.headers.get("content-type") ?? "").includes("json")) return ((await r.json()) as { features: PhotonFeature[] }).features;
-      if (r.status !== 429 && r.status < 500) return [];
-    } catch {}
-    await new Promise((res) => setTimeout(res, 350)); // public instance throttles bursts
-  }
-  return null; // unavailable
+  // public instance throttles bursts: ≤ 3 in flight, back off on 429
+  const r = await photonSlot(() => osmFetch(u, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(5000) }, false));
+  if (!r) return null; // unavailable
+  if (r.ok && (r.headers.get("content-type") ?? "").includes("json")) return ((await r.json()) as { features: PhotonFeature[] }).features;
+  return [];
 }
 
 async function nominatim(q: string, near: { lat: number; lng: number } | null, limit: number): Promise<GeoHit[]> {
@@ -105,8 +102,8 @@ async function nominatim(q: string, near: { lat: number; lng: number } | null, l
     n.searchParams.set("limit", String(limit));
     n.searchParams.set("accept-language", "th,en");
     if (near) n.searchParams.set("viewbox", `${near.lng - 0.6},${near.lat + 0.6},${near.lng + 0.6},${near.lat - 0.6}`);
-    const r = await fetch(n, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(6000) });
-    if (!r.ok) return [];
+    const r = await osmFetch(n, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(6000) }, true);
+    if (!r?.ok) return [];
     const j = (await r.json()) as { name: string; display_name: string; lat: string; lon: string; category: string; type: string }[];
     return j.map((x) => ({ name: x.name || q, lat: Number(x.lat), lng: Number(x.lon), address: x.display_name, kind: `${x.category}:${x.type}` }));
   } catch {
