@@ -235,6 +235,35 @@ export async function tidyDays(tripId: string, nDays: number, onlyDay: Scope, de
       if (!isAi(r) || t0 == null || t0 < 22 * 60 || ["food", "cafe", "nightlife", "transport", "stay"].includes(r.category) || r.details?.kind || NIGHTOK.test(`${r.name} ${r.details?.why ?? ""}`)) continue;
       await drop(r, true); notes.push(`ดึกเกินไป ย้ายไปรอจัด: ${r.name}`); changed = true;
     }
+    // moving day (Hakone → Kyoto): a stop in the new city can't come before the train that gets you there
+    if (d > 0) {
+      const hotelOn = await hotels(tripId);
+      const origin = hotelOn(d - 1);
+      const order = [...rows];
+      let moved = false;
+      for (let j = 0; j < order.length; j++) {
+        const T = order[j];
+        if (T.category !== "transport" || T.lat == null || !origin || kmBetween(T, origin) < 80) continue;
+        for (let i = 0; i < j; i++) {
+          const r = order[i];
+          if (!isAi(r) || r.category === "transport" || r.details?.kind || r.lat == null) continue;
+          if (kmBetween(r, T) < 20 && kmBetween(r, origin) > 80) {
+            order.splice(i, 1); order.splice(j, 0, r); i--; j--; moved = true;
+            notes.push(`ย้าย ${r.name} ไปหลังถึง ${T.name}`);
+          }
+        }
+      }
+      if (moved) {
+        for (let k = 0; k < order.length; k++) {
+          const r = order[k];
+          const after = order.slice(0, k).some((x) => x.category === "transport" && x.lat != null && origin && kmBetween(x, origin) >= 80);
+          await sql`update pinpai.places set sort_order = ${(k + 1) * 10}, start_time = ${after && r.category !== "transport" && isAi(r) ? null : r.start_time} where id = ${r.id} and trip_id = ${tripId}`;
+        }
+        await sql.begin((tx) => retimeStored(tx, tripId, d, { keepGaps: true }));
+        rows = (await loadDay(sql, tripId, d)).filter((r) => r.category !== "stay");
+        changed = true;
+      }
+    }
     // one dinner per evening, one lunch per midday
     const MEALY = /dinner|lunch|buffet|ดินเนอร์|บุฟเฟ่ต์|มื้อ/i;
     for (const [a, b] of [[660, 900], [1050, 1410]]) {
