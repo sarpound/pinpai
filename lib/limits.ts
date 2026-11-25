@@ -1,6 +1,7 @@
 import { sql } from "./db";
 import { HttpError } from "./auth";
-import type { Usage } from "./ai";
+import { setEconomy, type Usage } from "./ai";
+import { limitDb } from "./ratelimit";
 
 // Spend guard for the AI features. Defaults sized to AI Gateway's free monthly credit ($5).
 // When the month's metered spend reaches the cap, AI features switch off until the 1st.
@@ -17,13 +18,16 @@ export const AI_OFF_MESSAGE = "ฟีเจอร์ AI ปิดชั่วค
  * Check caps, open a meter row, and return a recorder that stores the real token cost.
  * Counts only 'meter' rows (import also writes a 'done' cache row).
  */
-export async function aiBudget(tripId: string, kind = "ai") {
+export async function aiBudget(tripId: string, kind = "ai", req?: Request) {
+  // per person (IP), shared by every instance: 120 AI calls/day, 30/10 min — a real trip planner never gets close
+  if (req) await limitDb(req, "ai", [{ max: 30, windowSec: 600 }, { max: 120, windowSec: 86400 }], "ใช้ AI ถี่เกินไป พักสักครู่แล้วลองใหม่");
   const [r] = await sql`select
       count(*) filter (where trip_id = ${tripId} and created_at > now() - interval '24 hours')::int as trip_day,
       count(*) filter (where created_at > now() - interval '24 hours')::int as all_day,
       coalesce(sum((result->>'cost')::numeric) filter (where created_at >= date_trunc('month', now())), 0)::float8 as month_cost
     from pinpai.imports where status = 'meter' and created_at >= least(date_trunc('month', now()), now() - interval '24 hours')`;
   if (r.month_cost >= MONTHLY_USD) throw new HttpError(503, AI_OFF_MESSAGE);
+  setEconomy(r.month_cost >= MONTHLY_USD * 0.8);
   if (r.trip_day >= PER_TRIP_DAILY) throw new HttpError(429, "ทริปนี้ใช้ AI ครบโควตาวันนี้แล้ว ลองใหม่พรุ่งนี้");
   if (r.all_day >= GLOBAL_DAILY) throw new HttpError(429, "ระบบ AI มีคนใช้เยอะเกินไปวันนี้ ลองใหม่ภายหลัง");
   const [row] = await sql`insert into pinpai.imports (trip_id, platform, status, result) values (${tripId}, ${kind}, 'meter', '{}'::jsonb) returning id`;

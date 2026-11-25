@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import { withBotId } from "botid/next/config";
 const config: NextConfig = {
   serverExternalPackages: ["postgres", "web-push"],
   async headers() {
@@ -11,4 +12,4 @@ const config: NextConfig = {
     ] }];
   },
 };
-export default config;
+export default withBotId(config);

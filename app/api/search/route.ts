@@ -34,7 +34,7 @@ export async function GET(req: Request) {
       let names: string[] = hit?.data?.queries ?? [];
       if (!hit) {
         const [t] = await sql`select destination from pinpai.trips where id = ${trip}`;
-        const meter = await aiBudget(trip, "search-translate");
+        const meter = await aiBudget(trip, "search-translate", req);
         names = await translatePlaceQuery(q, t?.destination ?? null, meter);
         await sql`insert into pinpai.route_cache (key, data) values (${key}, ${sql.json({ queries: names } as never)}) on conflict (key) do nothing`;
       }

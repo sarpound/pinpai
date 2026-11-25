@@ -1,3 +1,4 @@
+import { requireHuman } from "@/lib/ratelimit";
 import { NextResponse } from "next/server";
 import { sql } from "@/lib/db";
 import { handle, requireMember, readJson, str, HttpError } from "@/lib/auth";
@@ -49,7 +50,8 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/impo
       return NextResponse.json(await annotate({ platform: "gmaps", author: null, thumbnail: null, caption: "", destination: null, suggested_days: null, places: [place], source_url: url }));
     }
 
-    const meter = await aiBudget(id, "import");
+    await requireHuman(req);
+    const meter = await aiBudget(id, "import", req);
 
     let author: string | null = null, thumb: string | null = null;
     const platform = url ? detectPlatform(url) : image ? "screenshot" : "text";

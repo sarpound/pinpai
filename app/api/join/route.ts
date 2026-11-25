@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 import { sql, logActivity, bumpVersion } from "@/lib/db";
-import { rateLimit } from "@/lib/ratelimit";
+import { rateLimit, limitDb } from "@/lib/ratelimit";
 import { handle, readJson, str, newToken, hashToken, MEMBER_COLORS, HttpError } from "@/lib/auth";
 
 // GET ?code= → trip preview (title, dates, member count) for the join screen
 export async function GET(req: Request) {
   return handle(async () => {
     rateLimit(req, "joinpeek", 60, 600_000);
+    await limitDb(req, "joinpeek", [{ max: 120, windowSec: 3600 }]);
     const code = new URL(req.url).searchParams.get("code")?.toUpperCase().slice(0, 12) ?? "";
     const [t] = await sql`select t.title, t.destination, t.start_date::text, t.end_date::text, t.cover_emoji,
       (select count(*) from pinpai.members m where m.trip_id = t.id)::int as members
@@ -19,6 +20,7 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   return handle(async () => {
     rateLimit(req, "join", 20, 3600_000);
+    await limitDb(req, "join", [{ max: 30, windowSec: 3600 }]);
     const b = await readJson(req);
     const code = str(b.code, 12)?.toUpperCase();
     const name = str(b.name, 40);

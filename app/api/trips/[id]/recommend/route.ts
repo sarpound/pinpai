@@ -28,7 +28,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/reco
       const [hit] = await sql`select result from pinpai.imports where trip_id = ${id} and url = ${cacheKey} and status = 'done' and created_at > now() - interval '6 hours' order by created_at desc limit 1`;
       if (hit) return NextResponse.json(hit.result);
     }
-    const meter = await aiBudget(id, "recommend");
+    const meter = await aiBudget(id, "recommend", req);
     const recs = await recommendPlaces({ destination: trip.destination, kind, near, exclude: existing.map((p) => p.name as string), note }, meter);
     const anchor = dayPlaces.length
       ? { lat: dayPlaces.reduce((s, p) => s + p.lat, 0) / dayPlaces.length, lng: dayPlaces.reduce((s, p) => s + p.lng, 0) / dayPlaces.length }

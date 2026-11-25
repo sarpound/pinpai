@@ -1,5 +1,6 @@
 import { NextResponse, after } from "next/server";
 import { sql, bumpVersion, logActivity } from "@/lib/db";
+import { limitDb, requireHuman } from "@/lib/ratelimit";
 import { handle, requireMember, readJson, str, num, assertUuid, HttpError } from "@/lib/auth";
 import { planTrip, planOutline, settleDay, mealsNear, stopRules } from "@/lib/ai";
 import { randomUUID } from "crypto";
@@ -41,7 +42,12 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
       if (!claimed) throw new HttpError(409, "stale continuation");
       job0 = claimed.plan_job;
       me = { id: String(job0!.by_id ?? ""), name: String(job0!.by ?? "") };
-    } else me = await requireMember(req, id);
+    } else {
+      me = await requireMember(req, id);
+      // a fresh plan spends real money: people only (BotID), and a sane pace per person across all instances
+      await requireHuman(req);
+      await limitDb(req, "plan", [{ max: 8, windowSec: 600 }, { max: 30, windowSec: 86400 }], "กดจัดทริปถี่เกินไป รอสักครู่แล้วลองใหม่");
+    }
     const [trip] = await sql`select destination, dest_lat::float8 as lat, dest_lng::float8 as lng, start_date::text, end_date::text, prefs as cur_prefs, guide from pinpai.trips where id = ${id}`;
     if (!trip.destination) throw new HttpError(400, "ใส่จุดหมายของทริปก่อน");
     if (!trip.start_date || !trip.end_date) throw new HttpError(400, "ตั้งวันไป–กลับก่อน แล้วค่อยให้จัดทริป");
@@ -91,7 +97,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plan
     const exById = new Map(existing.map((e) => [e.id as string, e]));
     // everything on the trip (incl. the previous AI plan): for the hotel and "don't repeat other days" on a single-day re-plan
     const allPlaces = await sql`select name, day_index, category from pinpai.places where trip_id = ${id} and coalesce(details->>'kind', '') not in ('hotel_task', 'run', 'meal_fill')`;
-    const meter = await aiBudget(id, "plan");
+    const meter = await aiBudget(id, "plan", cont ? undefined : req);
     const chunked = onlyDay == null && days > LONG;
     const chunks: [number, number][] = [];
     for (let d = 0; d < days; d += CHUNK) chunks.push([d, Math.min(days - 1, d + CHUNK - 1)]);

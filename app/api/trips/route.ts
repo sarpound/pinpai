@@ -2,13 +2,15 @@ import { NextResponse } from "next/server";
 import { sql, logActivity } from "@/lib/db";
 import { handle, readJson, str, newToken, hashToken, newInviteCode, MEMBER_COLORS, HttpError } from "@/lib/auth";
 import { geocodeDestination } from "@/lib/geo";
-import { rateLimit } from "@/lib/ratelimit";
+import { rateLimit, limitDb, requireHuman } from "@/lib/ratelimit";
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 export async function POST(req: Request) {
   return handle(async () => {
     rateLimit(req, "create", 10, 3600_000);
+    await requireHuman(req);
+    await limitDb(req, "create", [{ max: 10, windowSec: 3600 }, { max: 30, windowSec: 86400 }], "สร้างทริปถี่เกินไป ลองใหม่ภายหลัง");
     const b = await readJson(req);
     const title = str(b.title, 120) ?? str(b.destination, 120);
     const name = str(b.name, 40);

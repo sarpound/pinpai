@@ -19,7 +19,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/sear
     const cacheKey = `ai-search:${(trip.destination ?? "").toLowerCase()}:${q.toLowerCase()}`;
     const [hit] = await sql`select result from pinpai.imports where url = ${cacheKey} and status = 'done' and created_at > now() - interval '30 days' limit 1`;
     if (hit) return NextResponse.json(hit.result);
-    const meter = await aiBudget(id, "search-ai");
+    const meter = await aiBudget(id, "search-ai", req);
     const found = await identifyPlaces(q, trip.destination, meter);
     const anchor = trip.lat != null ? { lat: trip.lat, lng: trip.lng } : null;
     const results = (await Promise.all(found.map(async (p) => {

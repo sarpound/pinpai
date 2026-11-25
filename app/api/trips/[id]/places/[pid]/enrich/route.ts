@@ -25,7 +25,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/plac
       const { why: _w, ...rest } = cached.details as Record<string, unknown>;
       d = rest;
     } else {
-      const meter = await aiBudget(id, "enrich");
+      const meter = await aiBudget(id, "enrich", req);
       d = await describePlace({ name: p.name, category: p.category, address: p.address, destination: p.destination }, meter);
     }
     const details = { ...(p.details ?? {}), ...d, ai: true, generated_at: new Date().toISOString() };

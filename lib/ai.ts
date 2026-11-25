@@ -18,6 +18,10 @@ const PRICES: Record<string, [number, number]> = {
 let modelIdx = 0;
 export const activeModel = () => MODELS[Math.min(modelIdx, MODELS.length - 1)];
 const MODEL = "__chain__"; // placeholder; gen() picks the real model
+// economy mode: the month's AI spend is near the cap → cheapest models first, so planning keeps working instead of switching off
+let economy = false;
+export const setEconomy = (on: boolean) => { economy = on; };
+const priceOf = (m: string) => { const [i, o] = PRICES[m] ?? [0.5, 2]; return i + 3 * o; };
 
 export type Usage = { inputTokens?: number; outputTokens?: number; cost?: number; model?: string };
 export type Meter = (u: Usage) => Promise<void> | void;
@@ -38,7 +42,8 @@ const cooldown = new Map<string, number>(); // model → epoch ms it may be used
  *  Unavailable models are skipped for good; rate-limited ones are skipped for a minute and the next model answers. */
 async function gen<T>(opts: Gen, meter?: Meter): Promise<T> {
   let lastErr: unknown;
-  const order = MODELS.slice(modelIdx).sort((a, b) => Number((cooldown.get(a) ?? 0) > Date.now()) - Number((cooldown.get(b) ?? 0) > Date.now()));
+  const base = economy ? [...MODELS.slice(modelIdx)].sort((a, b) => priceOf(a) - priceOf(b)) : MODELS.slice(modelIdx);
+  const order = base.sort((a, b) => Number((cooldown.get(a) ?? 0) > Date.now()) - Number((cooldown.get(b) ?? 0) > Date.now()));
   for (const model of order) {
     try {
       // gemini "thinks" out of the same token budget and then truncates the JSON → turn thinking off for structured output

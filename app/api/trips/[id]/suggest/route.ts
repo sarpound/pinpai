@@ -67,7 +67,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/trips/[id]/sugg
     let aiError: string | null = null;
     if (!pool) {
       try {
-        const meter = await aiBudget(id, "suggest");
+        const meter = await aiBudget(id, "suggest", req);
         const recs = await suggestNearby({ destination: trip.destination ?? "", kind, lat, lng, label: str(b.label, 120), meal, at,
           food: prefs.food, companions: prefs.companions, exclude: taken }, meter);
         const located = await mapLimit(recs, 4, async (p) => {
